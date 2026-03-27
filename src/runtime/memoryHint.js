@@ -99,7 +99,45 @@ async function buildMemoryHint({
       .map(({ _sim, ...rest }) => ({ ...rest, similarity: Math.round(_sim * 1000) / 1000 }))
   }
 
-  return { recent_failures: nearby, fingerprint_matches: fingerprintMatches }
+  // Generate avoidance hints from repeated failure patterns
+  const avoidanceHints = deriveAvoidanceHints(entries)
+
+  return { recent_failures: nearby, fingerprint_matches: fingerprintMatches, avoidance_hints: avoidanceHints }
 }
 
-module.exports = { buildMemoryHint, extractFeatures, featureSimilarity }
+/**
+ * Derive avoidance hints from repeated failure fingerprints.
+ * If the same failureClass appears 3+ times in recent entries, suggest avoidance.
+ */
+function deriveAvoidanceHints(entries, windowMs = 300000, minCount = 3) {
+  const cutoff = Date.now() - windowMs
+  const recent = entries.filter((e) => {
+    const ts = e.timestamp || new Date(e.ts || 0).getTime()
+    return ts >= cutoff
+  })
+
+  const counts = new Map()
+  for (const e of recent) {
+    const cls = e.failureClass || e.tag || 'unknown'
+    const action = e.actionType || e.step || 'unknown'
+    const key = `${cls}:${action}`
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+
+  const hints = []
+  for (const [key, count] of counts) {
+    if (count >= minCount) {
+      const [cls, action] = key.split(':')
+      hints.push({
+        type: 'avoid_repeated_failure',
+        failureClass: cls,
+        actionType: action,
+        count,
+        hint: `Avoid ${action} — repeated ${cls} failure (${count}x recent)`,
+      })
+    }
+  }
+  return hints
+}
+
+module.exports = { buildMemoryHint, extractFeatures, featureSimilarity, deriveAvoidanceHints }
