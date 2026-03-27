@@ -106,7 +106,8 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
     function isExecutionDone(execution) {
       const st = execution?.status
       if (st && st !== 'success') return false
-      return execution?.result?.done !== false
+      const output = execution?.details?.output ?? execution?.result
+      return output?.done !== false
     }
     return history
       .filter((h) => h && (h.stage === 'skill_execute' || h.stage === 'skill_execute_fallback'))
@@ -115,8 +116,8 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
         skillName: h.skillName ?? null,
         ok: isExecutionOk(h.execution),
         done: isExecutionDone(h.execution),
-        errorCode: h.execution?.error?.code ?? null,
-        errorMessage: h.execution?.error?.message ?? null,
+        errorCode: h.execution?.details?.error?.code ?? null,
+        errorMessage: h.execution?.errorMessage ?? h.execution?.details?.error?.message ?? null,
         isFallback: h.stage === 'skill_execute_fallback',
         status: h.execution?.status ?? null,
       }))
@@ -158,8 +159,9 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
         execution: {
           ok: fallbackSucceeded(fbExecution),
           status: fbExecution?.status || null,
-          error: fbExecution.error,
-          logs: Array.isArray(fbExecution.logs) ? fbExecution.logs.slice(-5) : null,
+          reason: fbExecution?.reason || null,
+          error: fbExecution?.errorMessage || fbExecution?.details?.error?.message || null,
+          logs: Array.isArray(fbExecution?.details?.logs) ? fbExecution.details.logs.slice(-5) : null,
         },
       })
       return fbExecution
@@ -251,7 +253,8 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
       function executionDone(execution) {
         if (!execution || typeof execution !== 'object') return false
         if (typeof execution.status === 'string' && execution.status !== 'success') return false
-        return execution?.result?.done !== false
+        const output = execution?.details?.output ?? execution?.result
+        return output?.done !== false
       }
 
         const snapshot = sense(bot, { radius: 5 })
@@ -453,8 +456,9 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
           execution: {
             ok: executionSucceeded(execution),
             status: execution.status || null,
-            error: execution.error,
-            logs: Array.isArray(execution.logs) ? execution.logs.slice(-5) : null,
+            reason: execution.reason || null,
+            error: execution.errorMessage || execution?.details?.error?.message || null,
+            logs: Array.isArray(execution?.details?.logs) ? execution.details.logs.slice(-5) : null,
           },
         })
 

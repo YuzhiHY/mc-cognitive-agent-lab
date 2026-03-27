@@ -8,6 +8,8 @@ const {
   blockedResult,
   interruptedResult,
 } = require('./contracts/executionResult')
+const { runSkillWithContract } = require('./contracts/skillContract')
+const { getHardcodedSkills } = require('./skills/hardcodedSkills')
 
 const MAX_DIG_REACH = 4.5
 
@@ -22,7 +24,7 @@ function distanceTo(a, b) {
   return Math.sqrt(dx * dx + dy * dy + dz * dz)
 }
 
-function createChainExecutor() {
+function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
   function clamp(n, min, max) {
     return Math.max(min, Math.min(max, n))
   }
@@ -120,6 +122,23 @@ function createChainExecutor() {
     }
 
     switch (type) {
+      case 'skill_ref': {
+        const skillName = String(step.name || '')
+        if (!skillName) return failOut(new Error('skill_ref requires name'), 'missing_skill_name', 'invalid')
+        const repo = typeof hardcodedSkillsFactory === 'function'
+          ? hardcodedSkillsFactory({ api, bot })
+          : getHardcodedSkills({ api, bot })
+        const skill = repo?.get?.(skillName)
+        if (!skill) return failOut(new Error(`Unknown hardcoded skill: ${skillName}`), 'unknown_skill_ref', 'invalid')
+        const res = await runSkillWithContract({
+          skill,
+          api,
+          bot,
+          ctx,
+          args: step.args || {},
+        })
+        return { ...res, result: res?.details?.output }
+      }
       case 'chat': {
         const message = step.message || ''
         if (message) bot.chat(String(message))
@@ -158,19 +177,9 @@ function createChainExecutor() {
           timeoutMs: step.timeoutMs || adaptiveTimeoutMs(step, ctx, bot),
           filename: `${step.skillName || 'chain_skill'}.js`,
         })
-        if (!result.executionResult) {
-          const executionResult = (result.ok ? successResult : failureResult)({
-            source: 'chain',
-            actionType: 'skill',
-            skillName: step.skillName || undefined,
-            startedAt,
-            endedAt: Date.now(),
-            reason: result.ok ? 'skill_executed' : 'skill_failed',
-            errorMessage: result.error?.message || null,
-            details: { sandbox: result },
-          })
-          return { ...result, ...executionResult, executionResult }
-        }
+        // Sandbox now returns normalized execution result directly.
+        const output = result?.details?.output
+        if (output !== undefined) return { ...result, result: output }
         return result
       }
 
@@ -584,14 +593,20 @@ function createChainExecutor() {
           type: 'chain_step_end', cycle,
           stepIndex: i, stepType: step.type,
           ok: stepResult.ok,
-          error: stepResult.error?.message || null,
+          status: stepResult.status || null,
+          reason: stepResult.reason || null,
+          error: stepResult.errorMessage || stepResult.error?.message || null,
         })
       }
 
       if (stepResult.ok) {
         completed += 1
       } else {
-        failedStep = { index: i, type: step.type, error: stepResult.error }
+        failedStep = {
+          index: i,
+          type: step.type,
+          error: stepResult.error || { message: stepResult.errorMessage || stepResult.reason || 'step_failed' },
+        }
         break
       }
     }

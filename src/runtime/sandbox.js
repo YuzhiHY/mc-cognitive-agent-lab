@@ -87,62 +87,44 @@ async function runSkillInSandbox({
   try {
     fn(exports, require, module, filename, '/')
   } catch (err) {
-    const executionResult = failureResult({
+    return failureResult({
       source: 'sandbox',
       actionType: 'skill',
       startedAt,
       endedAt: Date.now(),
       reason: 'sandbox_compile_failed',
       errorMessage: err?.message || String(err),
-      details: { error: serializeError(err) },
+      details: { output: null, error: serializeError(err), logs },
     })
-    return {
-      ...executionResult,
-      executionResult,
-      logs,
-      error: serializeError(err),
-    }
   }
 
   const run = module.exports?.run
   if (typeof run !== 'function') {
     const err = new Error('Skill module must export: module.exports.run = async ({ api, ctx }) => { ... }')
-    const executionResult = invalidResult({
+    return invalidResult({
       source: 'sandbox',
       actionType: 'skill',
       startedAt,
       endedAt: Date.now(),
       reason: 'missing_run_export',
       errorMessage: err.message,
-      details: { error: serializeError(err) },
+      details: { output: null, error: serializeError(err), logs },
     })
-    return {
-      ...executionResult,
-      executionResult,
-      logs,
-      error: serializeError(err),
-    }
   }
 
   try {
-    const result = await withTimeout(Promise.resolve(run({ api, ctx })), timeoutMs)
-    const executionResult = successResult({
+    const output = await withTimeout(Promise.resolve(run({ api, ctx })), timeoutMs)
+    return successResult({
       source: 'sandbox',
       actionType: 'skill',
       startedAt,
       endedAt: Date.now(),
       reason: 'skill_executed',
-      details: { result },
+      details: { output, error: null, logs },
     })
-    return {
-      ...executionResult,
-      executionResult,
-      result,
-      logs,
-    }
   } catch (err) {
     const isTimeout = err?.code === 'HARD_TIMEOUT'
-    const executionResult = isTimeout
+    return isTimeout
       ? timeoutResult({
         source: 'sandbox',
         actionType: 'skill',
@@ -150,7 +132,7 @@ async function runSkillInSandbox({
         endedAt: Date.now(),
         reason: 'skill_timeout',
         errorMessage: err?.message || String(err),
-        details: { error: serializeError(err) },
+        details: { output: null, error: serializeError(err), logs },
       })
       : failureResult({
         source: 'sandbox',
@@ -159,14 +141,8 @@ async function runSkillInSandbox({
         endedAt: Date.now(),
         reason: 'skill_runtime_error',
         errorMessage: err?.message || String(err),
-        details: { error: serializeError(err) },
+        details: { output: null, error: serializeError(err), logs },
       })
-    return {
-      ...executionResult,
-      executionResult,
-      error: serializeError(err),
-      logs,
-    }
   }
 }
 

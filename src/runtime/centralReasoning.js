@@ -13,6 +13,8 @@ const {
   compactChainResults,
   appendHabit,
 } = require('./learnTasks')
+const { chooseHardcodedSkill } = require('./planning/skillSelector')
+const { compileActionChain } = require('./planning/chainCompiler')
 
 function createCentralReasoning({ llm, personalityLlm }) {
   if (!llm) throw new Error('centralReasoning requires a core LLM client')
@@ -57,10 +59,10 @@ function createCentralReasoning({ llm, personalityLlm }) {
     }
     if (hasOak) {
       return {
-        thought: 'fast_fallback: gather nearby oak log',
+        thought: 'fast_fallback: gather nearby oak log via stable skill',
         actionChain: [
-          { type: 'navigate', target: 'nearest_oak_log', sprint: true },
-          { type: 'dig', target: 'oak_log' },
+          { type: 'skill_ref', name: 'approach_target', args: { target: 'oak_log', sprint: true } },
+          { type: 'skill_ref', name: 'mine_named_block', args: { block: 'oak_log', maxDistance: 20 } },
         ],
         memoryUpdates: [],
         nextGoalHint: 'gather_wood_fast',
@@ -261,6 +263,22 @@ function createCentralReasoning({ llm, personalityLlm }) {
         ? personalityFeedback.preferenceHints
         : [],
     }
+    // Prefer stable hardcoded skills before low-level ad-hoc chain when possible.
+    if (!Array.isArray(decision.actionChain) || decision.actionChain.length === 0) {
+      const selected = chooseHardcodedSkill({
+        goal: analysis?.selfGoal || analysis?.situationAnalysis || '',
+        snapshot: ctx?.snapshot || null,
+      })
+      if (selected?.name) {
+        decision.actionChain = [{ type: 'skill_ref', name: selected.name, args: selected.args || {} }]
+        decision.thought = decision.thought || `selected stable skill: ${selected.name}`
+      }
+    }
+    decision.actionChain = compileActionChain({
+      actionChain: decision.actionChain,
+      goal: analysis?.selfGoal || analysis?.situationAnalysis || '',
+      snapshot: ctx?.snapshot || null,
+    })
     decision.actionChain = applyPersonaPreferenceTieBreak(
       decision.actionChain,
       {

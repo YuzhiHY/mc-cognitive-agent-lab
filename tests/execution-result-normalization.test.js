@@ -42,6 +42,7 @@ module.exports.run = async ({ api, ctx }) => {
   assert.strictEqual(ok.status, 'success')
   assert.strictEqual(ok.source, 'sandbox')
   assert.strictEqual(ok.actionType, 'skill')
+  assert.strictEqual(ok.details?.output?.note, 'ok')
 
   const badCode = `
 module.exports.run = async ({ api, ctx }) => {
@@ -52,7 +53,8 @@ module.exports.run = async ({ api, ctx }) => {
   assert.strictEqual(bad.ok, false)
   assert.strictEqual(bad.status, 'failure')
   assert.strictEqual(bad.source, 'sandbox')
-  assert.ok(bad.error?.message.includes('boom'))
+  assert.ok(String(bad.errorMessage || '').includes('boom'))
+  assert.ok(String(bad.details?.error?.message || '').includes('boom'))
 }
 
 async function testApiExecuteActionNormalization() {

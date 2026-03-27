@@ -27,18 +27,18 @@ The system is designed as a **cognitive loop**, not a single-shot prompt executi
 
 The current system is **partially structured**, but still relies significantly on LLM-generated behavior.
 
-### Core loop (current)
+### Core loop (current default runtime path)
 
-1. Perception layer collects environment data and builds a semantic snapshot
-2. Snapshot is passed to LLM
-3. LLM returns:
-   - `thought`
-   - `skillName`
-   - `code` (executable behavior)
-4. Generated code is:
-   - stored in `skills/`
-   - executed in a sandbox (vm)
-5. Execution results are fed back into the next cycle
+1. Perception layer builds a structured snapshot
+2. Central planner selects goal and action chain / skill usage
+3. Executor runs bounded actions and chain steps with explicit success/failure status
+4. Outcomes are logged and fed into memory / learning signals
+5. Planner runs again only when execution completes/fails/interruption occurs
+
+### Controlled synthesis path (non-default)
+
+- If no suitable existing behavior is found, LLM synthesis may be used under policy/sandbox constraints.
+- Generated behavior is treated as untrusted and must be validated before stable reuse.
 
 ---
 

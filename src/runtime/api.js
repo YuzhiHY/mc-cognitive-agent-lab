@@ -1,4 +1,5 @@
 const { clearObstacleInFront } = require('./obstacleNav')
+const { createStableSkillOps } = require('./skills/stableSkillOps')
 const {
   successResult,
   failureResult,
@@ -204,7 +205,7 @@ function createApi(bot) {
     return !!bot.pathfinder
   }
 
-  const api = {
+  let api = {
     sleep,
 
     chat: (message) => bot.chat(String(message)),
@@ -453,156 +454,13 @@ function createApi(bot) {
       return { crafted: itemName, count }
     },
 
-    smartCraft: async (itemName, count = 1) => {
-      itemName = normalizeItemName(itemName)
-      try {
-        const { plugin: craftUtil } = require('mineflayer-crafting-util')
-        if (craftUtil && !bot._craftUtilLoaded) {
-          bot.loadPlugin(craftUtil)
-          bot._craftUtilLoaded = true
-        }
-      } catch { /* plugin not available */ }
-
-      const mcData = require('minecraft-data')(bot.version)
-      const item = mcData.itemsByName[itemName]
-      if (!item) throw new Error(`api.smartCraft: unknown item '${itemName}'`)
-
-      // Try mineflayer-crafting-util recursive planner first
-      if (typeof bot.planCraft === 'function') {
-        const plan = bot.planCraft(item.id, count)
-        if (plan.success) {
-          let table = null
-          for (const step of plan.recipesToDo) {
-            if (step.recipe.requiresTable && !table) {
-              table = await ensureCraftingTable(bot, mcData)
-            }
-            await bot.craft(step.recipe, step.recipeApplications, table || null)
-          }
-          return { crafted: itemName, count, steps: plan.recipesToDo.length }
-        }
-      }
-
-      // Robust fallback: try inventory and crafting-table recipes, choose any valid plan.
-      const invRecipe = bot.recipesFor(item.id, null, count, null)[0]
-      if (invRecipe) {
-        await bot.craft(invRecipe, count, null)
-        return { crafted: itemName, count, mode: 'inv_recipe' }
-      }
-      const table = await ensureCraftingTable(bot, mcData)
-      const tableRecipe = bot.recipesFor(item.id, null, count, table)[0]
-      if (tableRecipe) {
-        await bot.craft(tableRecipe, count, table)
-        return { crafted: itemName, count, mode: 'table_recipe' }
-      }
-      throw new Error(`api.smartCraft: no recipe for '${itemName}' (checked recursive/inventory/table)`)
-    },
+    smartCraft: async () => { throw new Error('api.smartCraft: uninitialized') },
     craftItem: async (itemName, count = 1) => api.smartCraft(itemName, count),
     craftAny: async (itemName, count = 1) => api.smartCraft(itemName, count),
 
-    smeltItem: async (itemName, {
-      count = 1,
-      fuelItemName = null,
-      timeoutMs = 22000,
-      ensureFurnace = true,
-    } = {}) => {
-      const invItems = bot.inventory.items()
-      const mcData = require('minecraft-data')(bot.version)
-      const resolved = resolveSmeltInputTarget(mcData, itemName, invItems)
-      itemName = resolved.input
-      const item = mcData.itemsByName[itemName]
-      if (!item) throw new Error(`api.smeltItem: unknown item '${itemName}'`)
-      let furnaceBlock = bot.findBlock({
-        matching: mcData.blocksByName.furnace?.id,
-        maxDistance: 5,
-      })
-      if (!furnaceBlock && ensureFurnace) {
-        furnaceBlock = await ensurePlacedUtilityBlock(bot, mcData, 'furnace')
-      }
-      if (!furnaceBlock) throw new Error('api.smeltItem: no furnace nearby')
+    smeltItem: async () => { throw new Error('api.smeltItem: uninitialized') },
 
-      const input = bot.inventory.items().find((i) => i.name === itemName)
-      if (!input || input.count <= 0) {
-        const mappedHint = resolved.mappedFrom ? ` (mapped from '${resolved.mappedFrom}')` : ''
-        throw new Error(`api.smeltItem: no input item '${itemName}' in inventory${mappedHint}`)
-      }
-      let fuel = fuelItemName
-        ? bot.inventory.items().find((i) => i.name === normalizeItemName(fuelItemName))
-        : selectFuelItem(bot)
-      if (!fuel) throw new Error('api.smeltItem: no smelting fuel available')
-
-      const furnace = await bot.openFurnace(furnaceBlock)
-      try {
-        const toSmelt = Math.max(1, count)
-        await furnace.putInput(input.type, null, Math.min(toSmelt, input.count))
-        fuel = fuelItemName
-          ? bot.inventory.items().find((i) => i.name === normalizeItemName(fuelItemName))
-          : selectFuelItem(bot)
-        if (!fuel) throw new Error('api.smeltItem: fuel missing after putInput')
-        await furnace.putFuel(fuel.type, null, 1)
-
-        const deadline = Date.now() + timeoutMs
-        let outputCount = 0
-        while (Date.now() < deadline) {
-          const out = furnace.outputItem()
-          outputCount = out?.count || 0
-          if (outputCount >= Math.min(toSmelt, input.count)) break
-          await sleep(350)
-        }
-        const out = furnace.outputItem()
-        if (!out || out.count <= 0) throw new Error('api.smeltItem: smelting timed out or no output')
-        await furnace.takeOutput()
-        return {
-          requested: resolved.requested,
-          smeltedInput: itemName,
-          output: out.name || null,
-          outputCount: out.count || 0,
-          mappedFrom: resolved.mappedFrom,
-        }
-      } finally {
-        try { furnace.close() } catch { /* noop */ }
-      }
-    },
-
-    placeTorchSmart: async ({
-      count = 1,
-      itemName = 'torch',
-      radius = 3,
-      force = false,
-    } = {}) => {
-      const torchName = normalizeItemName(itemName)
-      const inv = bot.inventory.items().find((i) => i.name === torchName)
-      if (!inv) throw new Error(`api.placeTorchSmart: no '${torchName}' in inventory`)
-      const isNight = bot.time?.isDay === false
-      if (!force && !isNight) {
-        return { placed: 0, reason: 'daytime_skip' }
-      }
-      const { Vec3 } = require('vec3')
-      const origin = bot.entity?.position?.floored?.()
-      if (!origin) throw new Error('api.placeTorchSmart: missing origin position')
-      let placed = 0
-      const candidates = []
-      for (let dx = -radius; dx <= radius; dx++) {
-        for (let dz = -radius; dz <= radius; dz++) {
-          const base = origin.offset(dx, -1, dz)
-          candidates.push(base)
-        }
-      }
-      candidates.sort((a, b) => a.distanceTo(origin) - b.distanceTo(origin))
-      for (const p of candidates) {
-        if (placed >= count) break
-        const ground = bot.blockAt(p)
-        const above = bot.blockAt(p.offset(0, 1, 0))
-        if (!ground || ground.name === 'air') continue
-        if (!above || above.name !== 'air') continue
-        try {
-          await bot.equip(inv, 'hand')
-          await bot.placeBlock(ground, new Vec3(0, 1, 0))
-          placed += 1
-          await sleep(120)
-        } catch { /* try next candidate */ }
-      }
-      return { placed, item: torchName }
-    },
+    placeTorchSmart: async () => { throw new Error('api.placeTorchSmart: uninitialized') },
 
     getCapabilities: () => ({
       canNavigate: hasPathfinder(),
@@ -676,7 +534,20 @@ function createApi(bot) {
         return fail(err)
       }
     },
+
+    // Key contract-wrapped exits for status-first consumers.
+    navigateToResult: async (pos, options = {}) => api.executeAction('navigate', { pos, options }),
+    digByNameResult: async (name, options = {}) => api.executeAction('digByName', { name, options }),
+    craftAnyResult: async (item, count = 1) => api.executeAction('craftAny', { item, count }),
+    smeltItemResult: async (item, options = {}) => api.executeAction('smeltItem', { item, options }),
+    placeTorchSmartResult: async (options = {}) => api.executeAction('placeTorchSmart', { options }),
+    attackNearestResult: async (entityType) => api.executeAction('attackNearest', { entityType }),
   }
+
+  const stableOps = createStableSkillOps(bot)
+  api.smartCraft = async (itemName, count = 1) => stableOps.smartCraft(itemName, count)
+  api.smeltItem = async (itemName, options = {}) => stableOps.smeltItem(itemName, options)
+  api.placeTorchSmart = async (options = {}) => stableOps.placeTorchSmart(options)
 
   return Object.freeze(api)
 }
