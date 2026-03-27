@@ -154,7 +154,10 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '',
       '## 铁律',
       '- 你不是在写故事或角色扮演。你的输出直接驱动机器人身体运动。',
-      '- 默认优先输出 skill_ref（稳定硬编码技能）。只有 skill_ref 无法覆盖时，才用低层动作（navigate/dig/craft/...）。',
+      '- **调度优先原则**：你的首要任务是从已有的稳定技能（availableSkills）中选择合适的 skill_ref 组成 actionChain。',
+      '- 优先级：skill_ref > 低层动作（navigate/dig/craft/...） > 代码生成（type:skill）。',
+      '- 代码生成（type:skill）是最后手段，仅当没有任何 skill_ref 或低层动作能完成目标时才允许。',
+      '- 如果你使用了 type:skill，必须在 thought 中说明为什么现有技能无法满足需求。',
       '- 每个动作必须是可执行的。不要输出无法执行的动作（例如合成一个你没有材料的物品）。',
       '- navigate 的 target 必须是 snapshot.nearby.blocks 中存在的方块名（格式 nearest_方块名，如 nearest_oak_log）。如果 snapshot 中没有这种方块，不要导航过去。',
       '- dig 的 target 必须是一个具体的方块名（如 oak_log），且必须在 snapshot.nearby.blocks 中存在。',
@@ -281,6 +284,7 @@ function buildCentralDecidePayload({
   inventoryGate,
   learnTaskQueue,
   rankedGoals,
+  availableSkills,
 }) {
   return JSON.stringify({
     analysis,
@@ -291,6 +295,7 @@ function buildCentralDecidePayload({
     inventoryGate,
     learnTaskQueue: learnTaskQueue || [],
     rankedGoals: rankedGoals || [],
+    availableSkills: availableSkills || [],
   })
 }
 

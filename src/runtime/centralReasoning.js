@@ -16,6 +16,8 @@ const {
 const { chooseHardcodedSkill } = require('./planning/skillSelector')
 const { compileActionChain } = require('./planning/chainCompiler')
 const { buildIntentAwareChain, shouldSuppressAutoWood } = require('./planning/intentFallback')
+const { derivePlannerMeta } = require('./contracts/plannerOutput')
+const { canSynthesize, filterSynthesisSteps } = require('./synthesisPolicy')
 
 function hasExplicitUserIntent(ctx, analysis) {
   if (Array.isArray(ctx?.playerMessages) && ctx.playerMessages.length > 0) return true
@@ -27,7 +29,7 @@ function hasExplicitUserIntent(ctx, analysis) {
   return true
 }
 
-function createCentralReasoning({ llm, personalityLlm }) {
+function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
   if (!llm) throw new Error('centralReasoning requires a core LLM client')
 
   let lastChainResult = null
@@ -269,6 +271,16 @@ function createCentralReasoning({ llm, personalityLlm }) {
     const personaPreferenceProfile = memory?.get('knowledge:persona:preference_profile')
       || personaStateProfile
       || null
+    // Build available skills list for scheduling-first LLM prompt
+    const availableSkills = stableSkills
+      ? [...stableSkills.entries()].map(([name, s]) => ({
+        name,
+        category: s.category || '',
+        description: s.description || '',
+        tags: s.tags || [],
+      }))
+      : []
+
     const userPayload = buildCentralDecidePayload({
       analysis: {
         situationAnalysis: analysis.situationAnalysis,
@@ -287,6 +299,7 @@ function createCentralReasoning({ llm, personalityLlm }) {
       inventoryGate: gate,
       learnTaskQueue,
       rankedGoals: analysis.rankedGoals || [],
+      availableSkills,
     })
 
     const result = await llm.plan({
@@ -336,6 +349,22 @@ function createCentralReasoning({ llm, personalityLlm }) {
         snapshot: ctx.snapshot,
       },
     )
+
+    // Synthesis policy gate: filter out code generation steps if policy denies
+    const plannerMeta = derivePlannerMeta(decision)
+    decision._plannerMeta = plannerMeta
+    if (plannerMeta.requiresSynthesis) {
+      const policy = canSynthesize({
+        plannerMeta,
+        snapshot: ctx.snapshot,
+        stableSkills: stableSkills || new Map(),
+      })
+      decision._synthesisPolicy = policy
+      if (!policy.allowed) {
+        decision.actionChain = filterSynthesisSteps(decision.actionChain, false)
+      }
+    }
+
     return decision
   }
 

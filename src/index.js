@@ -155,10 +155,12 @@ async function runDaemon(bot, llm, personalityLlm) {
   const { createCentralReasoning } = require('./runtime/centralReasoning')
   const { createChainExecutor } = require('./runtime/chainExecutor')
 
+  const { createStableSkillRepository } = require('./runtime/skills')
   const reflexEnabled = String(process.env.REFLEX_ENABLED || 'true').toLowerCase() === 'true'
   const reflexLayer = reflexEnabled ? createReflexLayer(bot) : null
   const memory = createMemory()
-  const centralReasoning = createCentralReasoning({ llm, personalityLlm })
+  const stableSkills = createStableSkillRepository()
+  const centralReasoning = createCentralReasoning({ llm, personalityLlm, stableSkills })
   const chainExecutor = createChainExecutor()
 
   const daemon = createDaemon({
