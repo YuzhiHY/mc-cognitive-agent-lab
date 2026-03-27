@@ -5,6 +5,7 @@ const { createApi } = require('./api')
 const { createJsonlLogger } = require('./logger')
 const { buildMemoryHint } = require('./memoryHint')
 const { createPersonality } = require('./personality')
+const { createTaskStateMachine } = require('./taskStateMachine')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -294,6 +295,20 @@ function evaluateExpectation({ expectation, chainResult }) {
   }
 }
 
+function significantWorldStateChange(prev, next) {
+  if (!prev || !next) return false
+  const prevThreat = String(prev.threat_level || 'none')
+  const nextThreat = String(next.threat_level || 'none')
+  if (prevThreat !== nextThreat) return true
+  const prevHp = Number(prev?.status?.health ?? 20)
+  const nextHp = Number(next?.status?.health ?? 20)
+  if (Math.abs(prevHp - nextHp) >= 2) return true
+  const prevHostiles = Number(prev?.threat_bands?.dangerClose || 0)
+  const nextHostiles = Number(next?.threat_bands?.dangerClose || 0)
+  if (prevHostiles !== nextHostiles) return true
+  return false
+}
+
 function createDaemon({
   bot,
   llm,
@@ -314,6 +329,9 @@ function createDaemon({
   let chatListener = null
   let reflexTicker = null
   let activeTask = null
+  let lastCycleSnapshot = null
+
+  const taskSm = createTaskStateMachine()
 
   const personalityEnabled =
     String(process.env.PERSONALITY_ENABLED || 'false').toLowerCase() === 'true'
@@ -360,9 +378,17 @@ function createDaemon({
         createdAt: nowIso(),
       }
     }
+    const prev = taskSm.getState()
+    taskSm.transition(state, {
+      reason: extra.reason || null,
+      meta: extra || null,
+      force: true,
+    })
+    const cur = taskSm.getState()
+    isExecuting = cur.executionLock
     activeTask = {
       ...activeTask,
-      state,
+      state: cur.state,
       updatedAt: nowIso(),
       ...extra,
     }
@@ -373,6 +399,14 @@ function createDaemon({
       reason: extra.reason || null,
       error: extra.error || null,
     })
+    await logger.log({
+      type: 'daemon_state_transition',
+      taskId: activeTask.id,
+      from: prev.state,
+      to: cur.state,
+      executionLock: cur.executionLock,
+      reason: extra.reason || null,
+    })
   }
 
   async function runCycle() {
@@ -380,6 +414,10 @@ function createDaemon({
     metrics.cycles += 1
     const cycleStart = Date.now()
     const snapshot = sense(bot, { radius: 5 })
+    const hasSignificantChange = significantWorldStateChange(lastCycleSnapshot, snapshot)
+    lastCycleSnapshot = snapshot
+
+    await setTaskState('assessing', { reason: 'cycle_assess' })
 
     const memoryHint = await buildMemoryHint({
       currentPos: snapshot.status?.position,
@@ -402,6 +440,21 @@ function createDaemon({
       recentDamageMs: lastDamageAt ? (Date.now() - lastDamageAt) : null,
     }
 
+    const highPriorityInterrupt = ctx.snapshot?.close_threat === true
+      || (ctx.snapshot?.status?.recentDamageMs != null && ctx.snapshot.status.recentDamageMs < 2500)
+    if (taskSm.isExecutionLocked() && !taskSm.shouldInterruptExecution({
+      reflexTriggered: false,
+      highPriorityInterrupt,
+      significantWorldChange: hasSignificantChange,
+    })) {
+      await logger.log({
+        type: 'daemon_execution_lock_hold',
+        cycle: cycleCount,
+        reason: 'execution_in_progress',
+      })
+      return { type: 'executing_hold', elapsedMs: Date.now() - cycleStart }
+    }
+
     // Phase 5D: reflex layer check
     if (reflexLayer) {
       const reflexAction = reflexLayer.check(snapshot, ctx)
@@ -412,7 +465,8 @@ function createDaemon({
         })
         try {
           isExecuting = true
-          await setTaskState('running', { reason: 'reflex_action' })
+          taskSm.setExecutionLock(true, 'reflex_action')
+          await setTaskState('interrupted', { reason: 'reflex_takeover' })
           try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
           try { api.clearControlStates?.() } catch { /* */ }
           const reflexResult = typeof reflexLayer.execute === 'function'
@@ -427,9 +481,11 @@ function createDaemon({
             ok: reflexResult?.ok ?? true,
             actionType: reflexResult?.actionType || reflexAction.name,
           })
-          await setTaskState('succeeded', { reason: `reflex:${reflexAction.name}` })
+          taskSm.setExecutionLock(false, `reflex:${reflexAction.name}`)
+          await setTaskState('recovering', { reason: `reflex:${reflexAction.name}` })
         } catch (err) {
           metrics.errorCount += 1
+          taskSm.setExecutionLock(false, `reflex_error:${reflexAction.name}`)
           await setTaskState('failed', { reason: `reflex:${reflexAction.name}`, error: err.message || String(err) })
           await logger.log({
             type: 'daemon_reflex_error', cycle: cycleCount,
@@ -464,7 +520,7 @@ function createDaemon({
       }
       try {
         isExecuting = true
-        await setTaskState('running', { reason: 'central_reasoning' })
+        await setTaskState('planning', { reason: 'central_reasoning' })
         const decision = await centralReasoning.think({
           ctx,
           bot,
@@ -516,6 +572,8 @@ function createDaemon({
         if (chainExecutor && Array.isArray(decision?.actionChain) && decision.actionChain.length > 0) {
           const freshSnapshot = sense(bot, { radius: 5 })
           const freshCtx = { ...ctx, snapshot: freshSnapshot }
+          taskSm.setExecutionLock(true, 'chain_execute')
+          await setTaskState('executing', { reason: 'chain_execute' })
           const chainResult = await chainExecutor.run({
             chain: decision.actionChain,
             api,
@@ -610,17 +668,20 @@ function createDaemon({
           }
 
           const success = chainSucceeded(chainResult)
-          await setTaskState(success ? 'succeeded' : 'failed', {
+          taskSm.setExecutionLock(false, success ? 'chain_completed' : 'chain_failed')
+          await setTaskState(success ? 'completed' : 'failed', {
             reason: success ? 'chain_completed' : 'chain_failed',
             error: success ? null : (chainResult.failedStep?.error?.message || 'chain_failed'),
           })
         } else {
-          await setTaskState('succeeded', { reason: 'no_chain' })
+          taskSm.setExecutionLock(false, 'no_chain')
+          await setTaskState('completed', { reason: 'no_chain' })
         }
 
         return { type: 'reasoning', elapsedMs: Date.now() - cycleStart }
       } catch (err) {
         metrics.errorCount += 1
+        taskSm.setExecutionLock(false, 'reasoning_error')
         await setTaskState('failed', { reason: 'reasoning_error', error: err.message || String(err) })
         await logger.log({
           type: 'daemon_reasoning_error', cycle: cycleCount,
@@ -799,7 +860,8 @@ function createDaemon({
       await sleep(pollMs)
     }
 
-    await setTaskState('stopped', { reason: 'daemon_stop' })
+    taskSm.setExecutionLock(false, 'daemon_stop')
+    await setTaskState('cooling_down', { reason: 'daemon_stop' })
     await logger.log({ type: 'daemon_stop', ts: nowIso(), totalCycles: cycleCount })
     const readiness = {
       combatReflexReady: metrics.reflexCount > 0,
@@ -832,7 +894,11 @@ function createDaemon({
     }
   }
 
-  return Object.freeze({ start, stop })
+  function getTaskState() {
+    return taskSm.getState()
+  }
+
+  return Object.freeze({ start, stop, getTaskState })
 }
 
 module.exports = { createDaemon }

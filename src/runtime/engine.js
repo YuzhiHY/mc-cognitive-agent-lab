@@ -10,6 +10,7 @@ const { createStuckDetector } = require('./stuckDetector')
 const { buildMemoryHint } = require('./memoryHint')
 const { checkPreconditions } = require('./skillValidator')
 const { createPersonality } = require('./personality')
+const { runSkillWithContract } = require('./contracts/skillContract')
 
 function nowIso() {
   return new Date().toISOString()
@@ -110,7 +111,7 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
       return output?.done !== false
     }
     return history
-      .filter((h) => h && (h.stage === 'skill_execute' || h.stage === 'skill_execute_fallback'))
+      .filter((h) => h && (h.stage === 'skill_execute' || h.stage === 'skill_execute_fallback' || h.stage === 'skill_execute_stable'))
       .map((h) => ({
         step: h.step ?? null,
         skillName: h.skillName ?? null,
@@ -119,6 +120,7 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
         errorCode: h.execution?.details?.error?.code ?? null,
         errorMessage: h.execution?.errorMessage ?? h.execution?.details?.error?.message ?? null,
         isFallback: h.stage === 'skill_execute_fallback',
+        isStable: h.stage === 'skill_execute_stable',
         status: h.execution?.status ?? null,
       }))
   }
@@ -294,6 +296,7 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
 
         let plan = null
         let reusedSkill = null
+        let stableSkillPick = null
 
         if (canSkipLLM) {
           plan = lastPlan
@@ -339,6 +342,65 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
               topCandidates: reuseDiagnostics?.topCandidates || [],
               candidateCount: reuseDiagnostics?.candidateCount || 0,
             })
+          }
+        }
+
+        // Prefer stable modular skills before asking LLM for new code.
+        if (!plan) {
+          stableSkillPick = skillRegistry.findBestStableSkill({
+            goal: task.goal,
+            snapshot,
+          })
+          if (stableSkillPick?.skill) {
+            const stableExec = await runSkillWithContract({
+              skill: stableSkillPick.skill,
+              api,
+              bot,
+              ctx,
+              args: stableSkillPick.args || {},
+            })
+            const stableRecord = {
+              stage: 'skill_execute_stable',
+              step,
+              ts: nowIso(),
+              skillName: stableSkillPick.name,
+              execution: stableExec,
+            }
+            history.push(stableRecord)
+            await logger.log({
+              type: 'skill_execute_stable',
+              taskId: task.id,
+              step,
+              skillName: stableSkillPick.name,
+              args: stableSkillPick.args || {},
+              execution: {
+                ok: executionSucceeded(stableExec),
+                status: stableExec?.status || null,
+                reason: stableExec?.reason || null,
+                error: stableExec?.errorMessage || null,
+              },
+            })
+
+            if (executionSucceeded(stableExec) && executionDone(stableExec)) {
+              finalState = 'succeeded'
+              const steps = buildStepSummaries(history)
+              return {
+                ok: true,
+                state: finalState,
+                failureCode: null,
+                taskId: task.id,
+                finishedAt: nowIso(),
+                elapsedMs: Date.now() - startedAt,
+                summary: buildSummaryFromSteps(steps),
+                steps,
+                history,
+              }
+            }
+
+            if (executionSucceeded(stableExec) && !executionDone(stableExec)) {
+              // Keep progressing with the same stable intent on next loop.
+              continue
+            }
           }
         }
 

@@ -1,5 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { createStableSkillRepository } = require('./skills')
+const { chooseHardcodedSkill } = require('./planning/skillSelector')
 
 function tokenize(text) {
   if (!text) return []
@@ -65,6 +67,7 @@ function createSkillRegistry({
 } = {}) {
   const isEnabled = !!enabled
   const indexPath = path.join(skillsDir, 'index.json')
+  const stableRepo = createStableSkillRepository()
 
   async function ensureDir() {
     await fs.promises.mkdir(skillsDir, { recursive: true })
@@ -261,6 +264,73 @@ function createSkillRegistry({
     return fs.promises.readFile(filePath, 'utf8')
   }
 
+  function listStableSkills({ tags = [], category = null } = {}) {
+    return stableRepo
+      .list({ tags, category })
+      .map((s) => ({
+        source: 'stable',
+        kind: 'hardcoded',
+        name: s.name,
+        category: s.category,
+        tags: s.tags || [],
+        riskLevel: s.riskLevel,
+      }))
+  }
+
+  async function listGeneratedSkills() {
+    await ensureDir()
+    const entries = await readIndexEntries()
+    return entries.map((e) => ({
+      source: 'generated',
+      kind: 'generated',
+      name: e.skillName,
+      category: null,
+      tags: e.tags || [],
+      riskLevel: e.riskLevel || 'unknown',
+      filePath: path.resolve(skillsDir, e.filePath),
+    }))
+  }
+
+  async function listSkills({ source = 'all', tags = [], category = null } = {}) {
+    let out = []
+    if (source === 'all' || source === 'stable') out = out.concat(listStableSkills({ tags, category }))
+    if (source === 'all' || source === 'generated') {
+      const generated = await listGeneratedSkills()
+      const filtered = generated.filter((g) => {
+        if (Array.isArray(tags) && tags.length > 0) {
+          const set = new Set((g.tags || []).map((t) => String(t).toLowerCase()))
+          if (!tags.every((t) => set.has(String(t).toLowerCase()))) return false
+        }
+        return true
+      })
+      out = out.concat(filtered)
+    }
+    return out
+  }
+
+  async function findSkillByName(name) {
+    const stable = stableRepo.get(name)
+    if (stable) return { source: 'stable', kind: 'hardcoded', name: stable.name, skill: stable }
+    const generated = await listGeneratedSkills()
+    const hit = generated.find((g) => g.name === String(name || ''))
+    if (!hit) return null
+    return hit
+  }
+
+  function findBestStableSkill({ goal, snapshot }) {
+    const selected = chooseHardcodedSkill({ goal: goal || '', snapshot: snapshot || null })
+    if (!selected?.name) return null
+    const skill = stableRepo.get(selected.name)
+    if (!skill) return null
+    return {
+      source: 'stable',
+      kind: 'hardcoded',
+      name: skill.name,
+      args: selected.args || {},
+      skill,
+    }
+  }
+
   return Object.freeze({
     enabled: isEnabled,
     minScore,
@@ -268,6 +338,11 @@ function createSkillRegistry({
     findReusableSkill,
     findReusableSkillWithDiagnostics,
     loadSkillCode,
+    listSkills,
+    findSkillByName,
+    findBestStableSkill,
+    listStableSkills,
+    listGeneratedSkills,
   })
 }
 

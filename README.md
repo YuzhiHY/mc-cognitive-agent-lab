@@ -35,6 +35,13 @@ The current system is **partially structured**, but still relies significantly o
 4. Outcomes are logged and fed into memory / learning signals
 5. Planner runs again only when execution completes/fails/interruption occurs
 
+### Current transition status
+
+- The runtime is actively transitioning away from a codegen-first default loop.
+- A modular skill layer now exists under `src/runtime/skills/` and is used as a first-class execution path (`skill_ref`).
+- LLM-generated skills are still supported via sandbox and remain part of the system for controlled synthesis.
+- Stable skills and generated skills now coexist; generated code is no longer the only behavior route.
+
 ### Controlled synthesis path (non-default)
 
 - If no suitable existing behavior is found, LLM synthesis may be used under policy/sandbox constraints.

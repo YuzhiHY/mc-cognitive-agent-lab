@@ -9,7 +9,7 @@ const {
   interruptedResult,
 } = require('./contracts/executionResult')
 const { runSkillWithContract } = require('./contracts/skillContract')
-const { getHardcodedSkills } = require('./skills/hardcodedSkills')
+const { createStableSkillRepository } = require('./skills')
 
 const MAX_DIG_REACH = 4.5
 
@@ -127,7 +127,7 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
         if (!skillName) return failOut(new Error('skill_ref requires name'), 'missing_skill_name', 'invalid')
         const repo = typeof hardcodedSkillsFactory === 'function'
           ? hardcodedSkillsFactory({ api, bot })
-          : getHardcodedSkills({ api, bot })
+          : createStableSkillRepository({ api, bot })
         const skill = repo?.get?.(skillName)
         if (!skill) return failOut(new Error(`Unknown hardcoded skill: ${skillName}`), 'unknown_skill_ref', 'invalid')
         const res = await runSkillWithContract({

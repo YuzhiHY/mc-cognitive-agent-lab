@@ -38,166 +38,6 @@ function ensurePathfinder(bot) {
   }
 }
 
-async function ensureCraftingTable(bot, mcData) {
-  const tableType = mcData.blocksByName.crafting_table
-  if (!tableType) return null
-
-  let table = bot.findBlock({ matching: tableType.id, maxDistance: 4 })
-  if (table) return table
-
-  const planksInInv = bot.inventory.items().find(i => i.name.endsWith('_planks'))
-  if (!planksInInv || planksInInv.count < 4) {
-    throw new Error('api.smartCraft: need crafting table but not enough planks to make one (need 4)')
-  }
-
-  const tableItem = mcData.itemsByName.crafting_table
-  if (!tableItem) return null
-  const tableRecipe = bot.recipesFor(tableItem.id, null, 1, null)[0]
-  if (!tableRecipe) throw new Error('api.smartCraft: cannot find recipe for crafting_table')
-  await bot.craft(tableRecipe, 1, null)
-
-  const pos = bot.entity.position.floored()
-  const placeTargets = [
-    pos.offset(1, -1, 0), pos.offset(-1, -1, 0),
-    pos.offset(0, -1, 1), pos.offset(0, -1, -1),
-  ]
-
-  for (const target of placeTargets) {
-    const ground = bot.blockAt(target)
-    if (ground && ground.name !== 'air') {
-      const tableInv = bot.inventory.items().find(i => i.name === 'crafting_table')
-      if (tableInv) {
-        try {
-          await bot.equip(tableInv, 'hand')
-          const { Vec3 } = require('vec3')
-          await bot.placeBlock(ground, new Vec3(0, 1, 0))
-          await sleep(300)
-          table = bot.findBlock({ matching: tableType.id, maxDistance: 4 })
-          if (table) return table
-        } catch { /* try next position */ }
-      }
-    }
-  }
-
-  throw new Error('api.smartCraft: crafted a crafting_table but failed to place it')
-}
-
-function listGroundCandidates(bot) {
-  const pos = bot.entity?.position?.floored?.()
-  if (!pos) return []
-  const candidates = [
-    pos.offset(1, -1, 0), pos.offset(-1, -1, 0),
-    pos.offset(0, -1, 1), pos.offset(0, -1, -1),
-    pos.offset(1, -1, 1), pos.offset(-1, -1, -1),
-    pos.offset(1, -1, -1), pos.offset(-1, -1, 1),
-    pos.offset(0, -1, 0),
-    // Fallback ring with a slightly larger radius.
-    pos.offset(2, -1, 0), pos.offset(-2, -1, 0),
-    pos.offset(0, -1, 2), pos.offset(0, -1, -2),
-    pos.offset(2, -1, 1), pos.offset(-2, -1, -1),
-    pos.offset(1, -1, 2), pos.offset(-1, -1, -2),
-    // Fallback for uneven terrain (one block lower).
-    pos.offset(1, -2, 0), pos.offset(-1, -2, 0),
-    pos.offset(0, -2, 1), pos.offset(0, -2, -1),
-    pos.offset(0, -2, 0),
-  ]
-  return candidates
-}
-
-function isStablePlacementGround(block) {
-  if (!block || block.name === 'air') return false
-  const n = String(block.name || '').toLowerCase()
-  if (n.includes('leaves')) return false
-  if (n.includes('vine')) return false
-  if (n.includes('grass')) return false
-  if (n.includes('fern')) return false
-  if (n.includes('snow')) return false
-  return true
-}
-
-async function ensurePlacedUtilityBlock(bot, mcData, blockName) {
-  const blockType = mcData.blocksByName[blockName]
-  if (!blockType) throw new Error(`api.ensurePlacedUtilityBlock: unknown block '${blockName}'`)
-  let found = bot.findBlock({ matching: blockType.id, maxDistance: 5 })
-  if (found) return found
-
-  const item = bot.inventory.items().find((i) => i.name === blockName)
-  if (!item) {
-    if (blockName === 'furnace') {
-      // try crafting furnace if possible
-      const furnaceItem = mcData.itemsByName.furnace
-      if (!furnaceItem) throw new Error('api.ensurePlacedUtilityBlock: furnace item data missing')
-      const table = await ensureCraftingTable(bot, mcData)
-      const recipe = bot.recipesFor(furnaceItem.id, null, 1, table)[0]
-      if (!recipe) throw new Error('api.ensurePlacedUtilityBlock: cannot craft furnace (missing cobblestone?)')
-      await bot.craft(recipe, 1, table)
-    } else {
-      throw new Error(`api.ensurePlacedUtilityBlock: '${blockName}' not in inventory`)
-    }
-  }
-
-  const utility = bot.inventory.items().find((i) => i.name === blockName)
-  if (!utility) throw new Error(`api.ensurePlacedUtilityBlock: '${blockName}' still missing after craft`)
-  const { Vec3 } = require('vec3')
-  for (const p of listGroundCandidates(bot)) {
-    const ground = bot.blockAt(p)
-    const above = bot.blockAt(p.offset(0, 1, 0))
-    if (!isStablePlacementGround(ground)) continue
-    if (!above || above.name !== 'air') continue
-    try {
-      await bot.equip(utility, 'hand')
-      await bot.placeBlock(ground, new Vec3(0, 1, 0))
-      await sleep(300)
-      found = bot.findBlock({ matching: blockType.id, maxDistance: 6 })
-      if (found) return found
-    } catch { /* try next */ }
-  }
-  throw new Error(`api.ensurePlacedUtilityBlock: failed to place '${blockName}'`)
-}
-
-function selectFuelItem(bot) {
-  const items = bot.inventory.items()
-  const fuelPriority = [
-    'coal_block', 'coal', 'charcoal',
-    'blaze_rod',
-    'stick',
-    'oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks',
-    'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log',
-  ]
-  for (const f of fuelPriority) {
-    const found = items.find((i) => i.name === f && i.count > 0)
-    if (found) return found
-  }
-  return null
-}
-
-function resolveSmeltInputTarget(mcData, requestedName, inventoryItems = []) {
-  const req = normalizeItemName(requestedName)
-  const inputByOutput = {
-    iron_ingot: ['iron_ore', 'deepslate_iron_ore', 'raw_iron'],
-    gold_ingot: ['gold_ore', 'deepslate_gold_ore', 'raw_gold'],
-    copper_ingot: ['copper_ore', 'deepslate_copper_ore', 'raw_copper'],
-    glass: ['sand', 'red_sand'],
-    charcoal: ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log'],
-    smooth_stone: ['stone'],
-    stone: ['cobblestone'],
-    cracked_stone_bricks: ['stone_bricks'],
-    dried_kelp: ['kelp'],
-    brick: ['clay_ball'],
-  }
-
-  const allInputs = new Set()
-  Object.values(inputByOutput).forEach((arr) => arr.forEach((v) => allInputs.add(v)))
-  // If user passes a smelt output keyword (e.g. iron_ingot), map to best available input first.
-  const candidates = inputByOutput[req] || []
-  if (!candidates.length && (allInputs.has(req) || mcData.itemsByName[req])) {
-    return { input: req, requested: req, mappedFrom: null }
-  }
-  if (!candidates.length) return { input: req, requested: req, mappedFrom: null }
-  const invSet = new Set(inventoryItems.map((i) => i.name))
-  const picked = candidates.find((c) => invSet.has(c)) || candidates[0]
-  return { input: picked, requested: req, mappedFrom: req }
-}
 
 function createApi(bot) {
   const hasPathfinder = () => {
@@ -432,6 +272,66 @@ function createApi(bot) {
       }
       return { collected }
     },
+    placeNamedBlock: async (itemName) => {
+      const normalized = normalizeItemName(itemName)
+      const item = bot.inventory.items().find((i) => i.name === normalized)
+      if (!item) throw new Error(`api.placeNamedBlock: missing item '${normalized}'`)
+      const origin = bot.entity?.position?.floored?.()
+      if (!origin) throw new Error('api.placeNamedBlock: missing position')
+      const { Vec3 } = require('vec3')
+      const bases = [
+        origin.offset(1, -1, 0), origin.offset(-1, -1, 0),
+        origin.offset(0, -1, 1), origin.offset(0, -1, -1),
+        origin.offset(0, -1, 0),
+      ]
+      for (const p of bases) {
+        const ground = bot.blockAt(p)
+        const above = bot.blockAt(p.offset(0, 1, 0))
+        if (!ground || ground.name === 'air') continue
+        if (!above || above.name !== 'air') continue
+        try {
+          await bot.equip(item, 'hand')
+          await bot.placeBlock(ground, new Vec3(0, 1, 0))
+          return { item: normalized, placed: true }
+        } catch { /* next */ }
+      }
+      throw new Error(`api.placeNamedBlock: no valid place spot for '${normalized}'`)
+    },
+    eatFood: async (itemName) => {
+      const normalized = normalizeItemName(itemName)
+      const item = bot.inventory.items().find((i) => i.name === normalized)
+      if (!item) throw new Error(`api.eatFood: missing item '${normalized}'`)
+      await bot.equip(item, 'hand')
+      bot.activateItem()
+      await sleep(1850)
+      bot.deactivateItem()
+      return { ate: normalized }
+    },
+    retreatFromThreat: async () => {
+      const origin = bot.entity?.position
+      if (!origin) throw new Error('api.retreatFromThreat: missing position')
+      const target = Object.values(bot.entities || {})
+        .filter((e) => e?.position && e.id !== bot.entity?.id)
+        .sort((a, b) => origin.distanceTo(a.position) - origin.distanceTo(b.position))[0]
+      if (!target?.position) throw new Error('api.retreatFromThreat: no nearby threat')
+      const dx = origin.x - target.position.x
+      const dz = origin.z - target.position.z
+      const yaw = Math.atan2(-dx, -dz)
+      await bot.look(yaw, bot.entity.pitch, true)
+      bot.setControlState('sprint', true)
+      bot.setControlState('forward', true)
+      bot.setControlState('jump', true)
+      await sleep(900)
+      api.clearControlStates()
+      return { retreated: true }
+    },
+    recoverFromStuck: async () => {
+      await clearObstacleInFront(bot)
+      bot.setControlState('jump', true)
+      await sleep(220)
+      bot.setControlState('jump', false)
+      return { recovered: true }
+    },
 
     craft: async (itemName, count = 1, useCraftingTable = false) => {
       itemName = normalizeItemName(itemName)
@@ -526,6 +426,24 @@ function createApi(bot) {
           case 'attackNearest': {
             const result = await api.attackNearest(payload.entityType)
             return done(result, 'attacked')
+          }
+          case 'placeNamedBlock': {
+            if (!payload?.item) return fail(new Error('placeNamedBlock requires payload.item'), 'missing_item', 'invalid')
+            const result = await api.placeNamedBlock(payload.item)
+            return done(result, 'placed')
+          }
+          case 'eatFood': {
+            if (!payload?.item) return fail(new Error('eatFood requires payload.item'), 'missing_item', 'invalid')
+            const result = await api.eatFood(payload.item)
+            return done(result, 'ate')
+          }
+          case 'retreatFromThreat': {
+            const result = await api.retreatFromThreat()
+            return done(result, 'retreated')
+          }
+          case 'recoverFromStuck': {
+            const result = await api.recoverFromStuck()
+            return done(result, 'recovered')
           }
           default:
             return fail(new Error(`Unknown actionType: ${t}`), 'unknown_action_type', 'invalid')
