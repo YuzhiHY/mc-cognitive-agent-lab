@@ -1,6 +1,13 @@
 const { sense } = require('./sense')
 const { clearObstacleInFront } = require('./obstacleNav')
 const { runSkillInSandbox, serializeError, withTimeout } = require('./sandbox')
+const {
+  successResult,
+  failureResult,
+  invalidResult,
+  blockedResult,
+  interruptedResult,
+} = require('./contracts/executionResult')
 
 const MAX_DIG_REACH = 4.5
 
@@ -85,12 +92,38 @@ function createChainExecutor() {
 
   async function executeStep(step, { api, bot, ctx, state }) {
     const type = step.type || 'unknown'
+    const startedAt = Date.now()
+    const okOut = (result, reason = 'ok') => {
+      const executionResult = successResult({
+        source: 'chain',
+        actionType: type,
+        startedAt,
+        endedAt: Date.now(),
+        reason,
+        details: { result },
+      })
+      return { ...executionResult, executionResult, result }
+    }
+    const failOut = (error, reason = 'step_failed', kind = 'failure') => {
+      const msg = error?.message || String(error || reason)
+      const factory = kind === 'invalid' ? invalidResult : (kind === 'blocked' ? blockedResult : failureResult)
+      const executionResult = factory({
+        source: 'chain',
+        actionType: type,
+        startedAt,
+        endedAt: Date.now(),
+        reason,
+        errorMessage: msg,
+        details: { error: serializeError(error) },
+      })
+      return { ...executionResult, executionResult, error: serializeError(error) || { message: msg } }
+    }
 
     switch (type) {
       case 'chat': {
         const message = step.message || ''
         if (message) bot.chat(String(message))
-        return { ok: true, result: { type: 'chat', message } }
+        return okOut({ type: 'chat', message }, 'chat_sent')
       }
 
       case 'navigate': {
@@ -101,21 +134,21 @@ function createChainExecutor() {
           target = resolveNavigationTarget(step.target, bot, ctx)
         }
         if (!target) {
-          return { ok: false, error: { message: `Cannot resolve navigation target: ${step.target || 'none'}` } }
+          return failOut(new Error(`Cannot resolve navigation target: ${step.target || 'none'}`), 'target_unresolved', 'invalid')
         }
         try {
           const timeoutMs = adaptiveTimeoutMs(step, ctx, bot, target)
           await navigateWithObstacleClear(bot, api, target, { sprint: step.sprint || false, timeoutMs })
-          return { ok: true, result: { type: 'navigate', arrived: true } }
+          return okOut({ type: 'navigate', arrived: true }, 'arrived')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'navigate_failed')
         }
       }
 
       case 'skill': {
         const code = step.code
         if (!code) {
-          return { ok: false, error: { message: 'Skill step missing code' } }
+          return failOut(new Error('Skill step missing code'), 'missing_skill_code', 'invalid')
         }
         const normalizedCode = code.replace(/\\n/g, '\n').replace(/\\t/g, '\t')
         const result = await runSkillInSandbox({
@@ -125,22 +158,35 @@ function createChainExecutor() {
           timeoutMs: step.timeoutMs || adaptiveTimeoutMs(step, ctx, bot),
           filename: `${step.skillName || 'chain_skill'}.js`,
         })
+        if (!result.executionResult) {
+          const executionResult = (result.ok ? successResult : failureResult)({
+            source: 'chain',
+            actionType: 'skill',
+            skillName: step.skillName || undefined,
+            startedAt,
+            endedAt: Date.now(),
+            reason: result.ok ? 'skill_executed' : 'skill_failed',
+            errorMessage: result.error?.message || null,
+            details: { sandbox: result },
+          })
+          return { ...result, ...executionResult, executionResult }
+        }
         return result
       }
 
       case 'wait': {
         const timeoutMs = step.timeoutMs || 5000
         await sleep(timeoutMs)
-        return { ok: true, result: { type: 'wait', waited: timeoutMs } }
+        return okOut({ type: 'wait', waited: timeoutMs }, 'wait_done')
       }
 
       case 'dig': {
         const blockTarget = step.target
         if (!blockTarget) {
-          return { ok: false, error: { message: 'Dig step missing target' } }
+          return failOut(new Error('Dig step missing target'), 'missing_dig_target', 'invalid')
         }
         if (String(blockTarget).toLowerCase() === 'crafting_table' && !state?.confirmedPlaced?.crafting_table) {
-          return { ok: false, error: { message: 'dig crafting_table blocked: no confirmed place success in this chain' } }
+          return failOut(new Error('dig crafting_table blocked: no confirmed place success in this chain'), 'dig_blocked_by_place_gate', 'blocked')
         }
         try {
           let block = null
@@ -152,7 +198,7 @@ function createChainExecutor() {
           }
           if (!block) block = findBlockByDescription(blockTarget, bot)
           if (!block) {
-            return { ok: false, error: { message: `Block not found: ${blockTarget}` } }
+            return failOut(new Error(`Block not found: ${blockTarget}`), 'target_block_not_found', 'invalid')
           }
           const origin = bot.entity?.position
           if (origin && block.position) {
@@ -188,9 +234,9 @@ function createChainExecutor() {
           if (String(blockTarget).toLowerCase() === 'crafting_table' && state?.confirmedPlaced) {
             delete state.confirmedPlaced.crafting_table
           }
-          return { ok: true, result: { type: 'dig', block: blockTarget, collected } }
+          return okOut({ type: 'dig', block: blockTarget, collected }, 'dig_done')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'dig_failed')
         }
       }
 
@@ -198,9 +244,9 @@ function createChainExecutor() {
         const itemName = String(step.item || 'crafting_table')
         try {
           const item = bot.inventory.items().find((i) => i.name === itemName)
-          if (!item) return { ok: false, error: { message: `Item not in inventory: ${itemName}` } }
+          if (!item) return failOut(new Error(`Item not in inventory: ${itemName}`), 'missing_item', 'invalid')
           const grounds = listPlaceGroundCandidates(bot)
-          if (!grounds.length) return { ok: false, error: { message: 'No valid ground to place block' } }
+          if (!grounds.length) return failOut(new Error('No valid ground to place block'), 'no_place_ground', 'blocked')
           const { Vec3 } = require('vec3')
           let placedPos = null
           let lastErr = null
@@ -220,29 +266,29 @@ function createChainExecutor() {
             }
           }
           if (!placedPos) {
-            return { ok: false, error: { message: `Place not confirmed: ${itemName}${lastErr ? ` (${lastErr.message || 'error'})` : ''}` } }
+            return failOut(new Error(`Place not confirmed: ${itemName}${lastErr ? ` (${lastErr.message || 'error'})` : ''}`), 'place_not_confirmed')
           }
           if (state?.confirmedPlaced) state.confirmedPlaced[itemName] = placedPos
-          return { ok: true, result: { type: 'place', item: itemName, position: placedPos, confirmed: true } }
+          return okOut({ type: 'place', item: itemName, position: placedPos, confirmed: true }, 'place_done')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'place_failed')
         }
       }
 
       case 'equip': {
         const itemName = step.item
         if (!itemName) {
-          return { ok: false, error: { message: 'Equip step missing item' } }
+          return failOut(new Error('Equip step missing item'), 'missing_equip_item', 'invalid')
         }
         try {
           const item = bot.inventory.items().find((i) => i.name === itemName)
           if (!item) {
-            return { ok: false, error: { message: `Item not in inventory: ${itemName}` } }
+            return failOut(new Error(`Item not in inventory: ${itemName}`), 'missing_item', 'invalid')
           }
           await bot.equip(item, 'hand')
-          return { ok: true, result: { type: 'equip', item: itemName } }
+          return okOut({ type: 'equip', item: itemName }, 'equip_done')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'equip_failed')
         }
       }
 
@@ -250,31 +296,31 @@ function createChainExecutor() {
         try {
           const targetType = step.target === 'nearest' ? undefined : step.target
           const result = await api.attackNearest(targetType)
-          return { ok: true, result: { type: 'attack', ...result } }
+          return okOut({ type: 'attack', ...result }, 'attack_done')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'attack_failed')
         }
       }
 
       case 'craft': {
         const itemName = step.item
         if (!itemName) {
-          return { ok: false, error: { message: 'Craft step missing item' } }
+          return failOut(new Error('Craft step missing item'), 'missing_craft_item', 'invalid')
         }
         try {
           const result = step.smart !== false
             ? await api.smartCraft(itemName, step.count || 1)
             : await api.craft(itemName, step.count || 1, !!step.useCraftingTable)
-          return { ok: true, result: { type: 'craft', ...result } }
+          return okOut({ type: 'craft', ...result }, 'craft_done')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'craft_failed')
         }
       }
 
       case 'smelt': {
         const itemName = step.item
         if (!itemName) {
-          return { ok: false, error: { message: 'Smelt step missing item' } }
+          return failOut(new Error('Smelt step missing item'), 'missing_smelt_item', 'invalid')
         }
         try {
           const result = await api.smeltItem(itemName, {
@@ -283,9 +329,9 @@ function createChainExecutor() {
             timeoutMs: step.timeoutMs || 22000,
             ensureFurnace: step.ensureFurnace !== false,
           })
-          return { ok: true, result: { type: 'smelt', ...result } }
+          return okOut({ type: 'smelt', ...result }, 'smelt_done')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'smelt_failed')
         }
       }
 
@@ -297,14 +343,14 @@ function createChainExecutor() {
             radius: step.radius || 3,
             force: step.force === true,
           })
-          return { ok: true, result: { type: 'torch', ...result } }
+          return okOut({ type: 'torch', ...result }, 'torch_done')
         } catch (err) {
-          return { ok: false, error: serializeError(err) }
+          return failOut(err, 'torch_failed')
         }
       }
 
       default:
-        return { ok: false, error: { message: `Unknown action type: ${type}` } }
+        return failOut(new Error(`Unknown action type: ${type}`), 'unknown_action_type', 'invalid')
     }
   }
 
@@ -484,9 +530,25 @@ function createChainExecutor() {
             })
           }
           try {
-            await reflexAction.execute({ api, bot, ctx })
+            if (typeof reflexLayer.execute === 'function') {
+              await reflexLayer.execute(reflexAction, { api, bot, ctx })
+            } else {
+              await reflexAction.execute({ api, bot, ctx })
+            }
           } catch { /* reflex must not crash chain */ }
           interrupted = true
+          results.push({
+            step: i,
+            type: 'reflex_interrupt',
+            ...interruptedResult({
+              source: 'chain',
+              actionType: 'reflex_interrupt',
+              startedAt: Date.now(),
+              endedAt: Date.now(),
+              interruptReason: reflexAction.reason || reflexAction.name || 'reflex_interrupt',
+              details: { action: reflexAction.name || 'unknown' },
+            }),
+          })
           break
         }
       }

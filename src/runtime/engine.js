@@ -98,16 +98,27 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
   }
 
   function buildStepSummaries(history) {
+    function isExecutionOk(execution) {
+      if (!execution || typeof execution !== 'object') return false
+      if (typeof execution.status === 'string') return execution.status === 'success'
+      return execution.ok === true
+    }
+    function isExecutionDone(execution) {
+      const st = execution?.status
+      if (st && st !== 'success') return false
+      return execution?.result?.done !== false
+    }
     return history
       .filter((h) => h && (h.stage === 'skill_execute' || h.stage === 'skill_execute_fallback'))
       .map((h) => ({
         step: h.step ?? null,
         skillName: h.skillName ?? null,
-        ok: h.execution?.ok === true,
-        done: h.execution?.result?.done !== false,
+        ok: isExecutionOk(h.execution),
+        done: isExecutionDone(h.execution),
         errorCode: h.execution?.error?.code ?? null,
         errorMessage: h.execution?.error?.message ?? null,
         isFallback: h.stage === 'skill_execute_fallback',
+        status: h.execution?.status ?? null,
       }))
   }
 
@@ -123,6 +134,11 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
   async function runFallbackSkill({
     fallbackName, ctx, api, logger, task, step, startedAt, hardTimeoutMs, history,
   }) {
+    const fallbackSucceeded = (execution) => {
+      if (!execution || typeof execution !== 'object') return false
+      if (typeof execution.status === 'string') return execution.status === 'success'
+      return execution.ok === true
+    }
     try {
       const fbPath = path.resolve(process.cwd(), 'skills', `${fallbackName}.js`)
       const fbCode = await fs.promises.readFile(fbPath, 'utf8')
@@ -140,7 +156,9 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
         type: 'skill_execute_fallback', taskId: task.id, step,
         originalSkill: ctx._currentSkillName || null, fallbackSkill: fallbackName,
         execution: {
-          ok: fbExecution.ok, error: fbExecution.error,
+          ok: fallbackSucceeded(fbExecution),
+          status: fbExecution?.status || null,
+          error: fbExecution.error,
           logs: Array.isArray(fbExecution.logs) ? fbExecution.logs.slice(-5) : null,
         },
       })
@@ -224,6 +242,18 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
           throw maxStepErr
         }
 
+      function executionSucceeded(execution) {
+        if (!execution || typeof execution !== 'object') return false
+        if (typeof execution.status === 'string') return execution.status === 'success'
+        return execution.ok === true
+      }
+
+      function executionDone(execution) {
+        if (!execution || typeof execution !== 'object') return false
+        if (typeof execution.status === 'string' && execution.status !== 'success') return false
+        return execution?.result?.done !== false
+      }
+
         const snapshot = sense(bot, { radius: 5 })
         const memoryHint = await buildMemoryHint({
           currentPos: snapshot.status?.position,
@@ -254,8 +284,8 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
           (t) => ['urgent', 'flee', 'danger', 'panic', 'retreat', 'run'].includes(t?.toLowerCase())
         ) || false
         const canSkipLLM = lastPlan
-          && lastExecution?.ok === true
-          && lastExecution?.result?.done === false
+          && executionSucceeded(lastExecution)
+          && !executionDone(lastExecution)
           && !threatEscalated
           && !personalityUrgency
 
@@ -421,7 +451,8 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
           step,
           skillName,
           execution: {
-            ok: execution.ok,
+            ok: executionSucceeded(execution),
+            status: execution.status || null,
             error: execution.error,
             logs: Array.isArray(execution.logs) ? execution.logs.slice(-5) : null,
           },
@@ -449,7 +480,7 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
           }
         }
 
-        if (!execution.ok) {
+        if (!executionSucceeded(execution)) {
           lastPlan = null
           lastExecution = null
           const fallbackName = reusedSkill?.meta?.fallbackSkill
@@ -458,8 +489,8 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
             const fbExecution = await runFallbackSkill({
               fallbackName, ctx, api, logger, task, step, startedAt, hardTimeoutMs, history,
             })
-            if (fbExecution && fbExecution.ok) {
-              const fbDone = fbExecution.result?.done !== false
+            if (fbExecution && executionSucceeded(fbExecution)) {
+              const fbDone = executionDone(fbExecution)
               if (fbDone) {
                 finalState = 'succeeded'
                 const steps = buildStepSummaries(history)
@@ -475,7 +506,7 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
         }
 
         // Stuck detection: only meaningful when skill says "not done yet".
-        const skillDone = execution.result?.done
+        const skillDone = executionDone(execution)
         const stuckResult = stuckDetector.checkStuck(step, skillDone)
         if (stuckResult.stuck) {
           history.push({
@@ -499,7 +530,7 @@ function createEngine({ bot, llm, personalityLlm, hardTimeoutMs = 10_000 }) {
           })
         }
 
-        const done = execution.result?.done !== false
+        const done = executionDone(execution)
         if (done) {
           finalState = 'succeeded'
           const steps = buildStepSummaries(history)

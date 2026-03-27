@@ -1,4 +1,10 @@
 const vm = require('node:vm')
+const {
+  successResult,
+  failureResult,
+  timeoutResult,
+  invalidResult,
+} = require('./contracts/executionResult')
 
 function createTimeoutError(ms) {
   const err = new Error(`Hard timeout exceeded (${ms}ms)`)
@@ -56,6 +62,7 @@ async function runSkillInSandbox({
   timeoutMs = 10_000,
   filename = 'skill.js',
 }) {
+  const startedAt = Date.now()
   const logs = []
   const sandboxConsole = Object.freeze({
     log: (...args) => logs.push({ level: 'log', ts: Date.now(), args }),
@@ -80,34 +87,83 @@ async function runSkillInSandbox({
   try {
     fn(exports, require, module, filename, '/')
   } catch (err) {
+    const executionResult = failureResult({
+      source: 'sandbox',
+      actionType: 'skill',
+      startedAt,
+      endedAt: Date.now(),
+      reason: 'sandbox_compile_failed',
+      errorMessage: err?.message || String(err),
+      details: { error: serializeError(err) },
+    })
     return {
-      ok: false,
-      error: serializeError(err),
+      ...executionResult,
+      executionResult,
       logs,
+      error: serializeError(err),
     }
   }
 
   const run = module.exports?.run
   if (typeof run !== 'function') {
+    const err = new Error('Skill module must export: module.exports.run = async ({ api, ctx }) => { ... }')
+    const executionResult = invalidResult({
+      source: 'sandbox',
+      actionType: 'skill',
+      startedAt,
+      endedAt: Date.now(),
+      reason: 'missing_run_export',
+      errorMessage: err.message,
+      details: { error: serializeError(err) },
+    })
     return {
-      ok: false,
-      error: serializeError(
-        new Error('Skill module must export: module.exports.run = async ({ api, ctx }) => { ... }')
-      ),
+      ...executionResult,
+      executionResult,
       logs,
+      error: serializeError(err),
     }
   }
 
   try {
     const result = await withTimeout(Promise.resolve(run({ api, ctx })), timeoutMs)
+    const executionResult = successResult({
+      source: 'sandbox',
+      actionType: 'skill',
+      startedAt,
+      endedAt: Date.now(),
+      reason: 'skill_executed',
+      details: { result },
+    })
     return {
-      ok: true,
+      ...executionResult,
+      executionResult,
       result,
       logs,
     }
   } catch (err) {
+    const isTimeout = err?.code === 'HARD_TIMEOUT'
+    const executionResult = isTimeout
+      ? timeoutResult({
+        source: 'sandbox',
+        actionType: 'skill',
+        startedAt,
+        endedAt: Date.now(),
+        reason: 'skill_timeout',
+        errorMessage: err?.message || String(err),
+        details: { error: serializeError(err) },
+      })
+      : failureResult({
+        source: 'sandbox',
+        actionType: 'skill',
+        startedAt,
+        endedAt: Date.now(),
+        reason: 'skill_runtime_error',
+        errorMessage: err?.message || String(err),
+        details: { error: serializeError(err) },
+      })
     return {
-      ok: false,
+      ...executionResult,
+      executionResult,
       error: serializeError(err),
       logs,
     }

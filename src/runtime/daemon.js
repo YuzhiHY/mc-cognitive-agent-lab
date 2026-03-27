@@ -269,7 +269,12 @@ function evaluateExpectation({ expectation, chainResult }) {
       mood: 'cautious',
     }
   }
-  const succeeded = !!chainResult && chainResult.completed >= chainResult.total && !chainResult.failedStep
+  const succeeded = !!chainResult
+    && chainResult.completed >= chainResult.total
+    && !chainResult.failedStep
+    && !chainResult.interrupted
+    && Array.isArray(chainResult.results)
+    && chainResult.results.every((r) => r?.status === 'success' || r?.ok === true)
   if (succeeded) {
     return {
       matched: true,
@@ -338,6 +343,15 @@ function createDaemon({
     filePrefix: process.env.LOG_FILE_PREFIX || 'agent',
   })
 
+  function chainSucceeded(chainResult) {
+    return !!chainResult
+      && chainResult.completed >= chainResult.total
+      && !chainResult.failedStep
+      && !chainResult.interrupted
+      && Array.isArray(chainResult.results)
+      && chainResult.results.every((r) => r?.status === 'success' || r?.ok === true)
+  }
+
   async function setTaskState(state, extra = {}) {
     if (!activeTask) {
       activeTask = {
@@ -401,8 +415,18 @@ function createDaemon({
           await setTaskState('running', { reason: 'reflex_action' })
           try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
           try { api.clearControlStates?.() } catch { /* */ }
-          await reflexAction.execute({ api, bot, ctx })
+          const reflexResult = typeof reflexLayer.execute === 'function'
+            ? await reflexLayer.execute(reflexAction, { api, bot, ctx })
+            : await reflexAction.execute({ api, bot, ctx })
           metrics.reflexCount += 1
+          await logger.log({
+            type: 'daemon_reflex_result',
+            cycle: cycleCount,
+            status: reflexResult?.status || null,
+            reason: reflexResult?.reason || reflexAction.reason,
+            ok: reflexResult?.ok ?? true,
+            actionType: reflexResult?.actionType || reflexAction.name,
+          })
           await setTaskState('succeeded', { reason: `reflex:${reflexAction.name}` })
         } catch (err) {
           metrics.errorCount += 1
@@ -560,9 +584,7 @@ function createDaemon({
                 || decision?.preferenceHints
                 || decision?.personalityPreferenceHints
                 || []
-              const success = chainResult.completed >= chainResult.total
-                && !chainResult.failedStep
-                && !chainResult.interrupted
+              const success = chainSucceeded(chainResult)
               const profile = await personality.reinforcePreferenceProfile({
                 usedHints: hints,
                 success,
@@ -587,7 +609,7 @@ function createDaemon({
             }
           }
 
-          const success = chainResult.completed >= chainResult.total && !chainResult.failedStep
+          const success = chainSucceeded(chainResult)
           await setTaskState(success ? 'succeeded' : 'failed', {
             reason: success ? 'chain_completed' : 'chain_failed',
             error: success ? null : (chainResult.failedStep?.error?.message || 'chain_failed'),
@@ -709,7 +731,11 @@ function createDaemon({
           nearestHostile: nearest,
           health: bot.health,
         })
-        await reflexAction.execute({ api, bot, ctx: { snapshot } })
+        if (typeof reflexLayer.execute === 'function') {
+          await reflexLayer.execute(reflexAction, { api, bot, ctx: { snapshot } })
+        } else {
+          await reflexAction.execute({ api, bot, ctx: { snapshot } })
+        }
       } catch {
         // fast reflex must never crash daemon
       }
@@ -734,7 +760,11 @@ function createDaemon({
               isExecuting = true
               try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
               try { api.clearControlStates?.() } catch { /* */ }
-              await reflexAction.execute({ api, bot, ctx: {} })
+              if (typeof reflexLayer.execute === 'function') {
+                await reflexLayer.execute(reflexAction, { api, bot, ctx: {} })
+              } else {
+                await reflexAction.execute({ api, bot, ctx: {} })
+              }
             } catch { /* reflex must not crash */ } finally {
               isExecuting = false
             }

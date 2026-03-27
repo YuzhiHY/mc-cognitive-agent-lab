@@ -1,6 +1,11 @@
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+const {
+  successResult,
+  failureResult,
+  invalidResult,
+} = require('./contracts/executionResult')
 
 const HOSTILE_MOBS = new Set([
   'zombie', 'skeleton', 'creeper', 'spider', 'cave_spider', 'enderman',
@@ -431,8 +436,44 @@ function createReflexLayer(bot) {
     return triggered[0]
   }
 
+  async function execute(rule, { api, bot: b, ctx } = {}) {
+    const startedAt = Date.now()
+    if (!rule || typeof rule.execute !== 'function') {
+      return invalidResult({
+        source: 'reflex',
+        actionType: 'reflex_rule',
+        startedAt,
+        endedAt: Date.now(),
+        reason: 'invalid_reflex_rule',
+        errorMessage: 'Reflex rule missing execute function',
+      })
+    }
+    try {
+      await rule.execute({ api, bot: b, ctx })
+      return successResult({
+        source: 'reflex',
+        actionType: rule.name || 'reflex_rule',
+        startedAt,
+        endedAt: Date.now(),
+        reason: rule.reason || 'reflex_executed',
+        details: { ruleId: rule.id || null },
+      })
+    } catch (err) {
+      return failureResult({
+        source: 'reflex',
+        actionType: rule.name || 'reflex_rule',
+        startedAt,
+        endedAt: Date.now(),
+        reason: 'reflex_execute_failed',
+        errorMessage: err?.message || String(err),
+        details: { ruleId: rule.id || null },
+      })
+    }
+  }
+
   return Object.freeze({
     check,
+    execute,
     rules,
     isBeingAttacked: () => beingAttacked,
     isCombatMode,

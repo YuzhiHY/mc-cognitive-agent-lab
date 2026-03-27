@@ -8,13 +8,14 @@
     "daemon": "node src/index.js --daemon",
     "live-selftest": "node src/index.js --live-selftest",
     "dev": "node src/index.js",
-    "test": "node tests/hardening.test.js && node tests/capability-selftest.test.js"
+    "test": "node tests/hardening.test.js && node tests/execution-result-normalization.test.js && node tests/capability-selftest.test.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "dotenv": "^17.3.1",
+    "minecraft-data": "^3.105.0",
     "mineflayer": "^4.35.0",
     "mineflayer-crafting-util": "^0.2.0",
     "mineflayer-pathfinder": "^2.4.5"

@@ -1,4 +1,9 @@
 const { clearObstacleInFront } = require('./obstacleNav')
+const {
+  successResult,
+  failureResult,
+  invalidResult,
+} = require('./contracts/executionResult')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -608,6 +613,69 @@ function createApi(bot) {
       canSmelt: true,
       canTorch: true,
     }),
+
+    // Phase 1 normalized API execution contract entry.
+    // Keeps existing methods unchanged while providing a status-first path.
+    executeAction: async (actionType, payload = {}) => {
+      const startedAt = Date.now()
+      const t = String(actionType || '').trim()
+      const done = (details, reason = 'ok') => successResult({
+        source: 'api',
+        actionType: t || 'unknown',
+        startedAt,
+        endedAt: Date.now(),
+        reason,
+        details,
+      })
+      const fail = (err, reason = 'api_action_failed', kind = 'failure') => {
+        const factory = kind === 'invalid' ? invalidResult : failureResult
+        return factory({
+          source: 'api',
+          actionType: t || 'unknown',
+          startedAt,
+          endedAt: Date.now(),
+          reason,
+          errorMessage: err?.message || String(err),
+          details: { error: err?.message || String(err), payload },
+        })
+      }
+      try {
+        switch (t) {
+          case 'navigate': {
+            if (!payload?.pos) return fail(new Error('navigate requires payload.pos'), 'missing_pos', 'invalid')
+            const result = await api.navigateTo(payload.pos, payload.options || {})
+            return done(result, result?.arrived ? 'arrived' : 'navigate_not_arrived')
+          }
+          case 'digByName': {
+            if (!payload?.name) return fail(new Error('digByName requires payload.name'), 'missing_name', 'invalid')
+            const result = await api.digByName(payload.name, payload.options || {})
+            return done(result, 'dug')
+          }
+          case 'craftAny': {
+            if (!payload?.item) return fail(new Error('craftAny requires payload.item'), 'missing_item', 'invalid')
+            const result = await api.craftAny(payload.item, payload.count || 1)
+            return done(result, 'crafted')
+          }
+          case 'smeltItem': {
+            if (!payload?.item) return fail(new Error('smeltItem requires payload.item'), 'missing_item', 'invalid')
+            const result = await api.smeltItem(payload.item, payload.options || {})
+            return done(result, 'smelted')
+          }
+          case 'placeTorchSmart': {
+            const result = await api.placeTorchSmart(payload.options || {})
+            return done(result, 'torch_placed')
+          }
+          case 'attackNearest': {
+            const result = await api.attackNearest(payload.entityType)
+            return done(result, 'attacked')
+          }
+          default:
+            return fail(new Error(`Unknown actionType: ${t}`), 'unknown_action_type', 'invalid')
+        }
+      } catch (err) {
+        return fail(err)
+      }
+    },
   }
 
   return Object.freeze(api)

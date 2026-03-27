@@ -158,18 +158,21 @@ async function testChainExecutorNewActions() {
     { api, bot, ctx, state: { confirmedPlaced: {} } }
   )
   assert.strictEqual(smeltRes.ok, true)
+  assert.strictEqual(smeltRes.status, 'success')
 
   const torchRes = await executor.executeStep(
     { type: 'torch', item: 'torch', count: 1, force: true },
     { api, bot, ctx, state: { confirmedPlaced: {} } }
   )
   assert.strictEqual(torchRes.ok, true)
+  assert.strictEqual(torchRes.status, 'success')
 
   const craftRes = await executor.executeStep(
     { type: 'craft', item: 'torch', count: 4 },
     { api, bot, ctx, state: { confirmedPlaced: {} } }
   )
   assert.strictEqual(craftRes.ok, true)
+  assert.strictEqual(craftRes.status, 'success')
 }
 
 async function run() {
