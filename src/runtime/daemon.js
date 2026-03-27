@@ -6,6 +6,10 @@ const { createJsonlLogger } = require('./logger')
 const { buildMemoryHint } = require('./memoryHint')
 const { createPersonality } = require('./personality')
 const { createTaskStateMachine } = require('./taskStateMachine')
+const {
+  noInterrupt,
+  systemInterrupt,
+} = require('./contracts/interruptDecision')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -309,6 +313,26 @@ function significantWorldStateChange(prev, next) {
   return false
 }
 
+function buildWorldChangeInterrupt({ changed, cycle, snapshot }) {
+  if (!changed) {
+    return noInterrupt({
+      source: 'world_change',
+      reason: 'world_change_not_significant',
+      metadata: { cycle },
+    })
+  }
+  return systemInterrupt({
+    source: 'world_change',
+    priority: 'medium',
+    interruptReason: 'significant_world_state_change',
+    metadata: {
+      cycle,
+      threat: snapshot?.threat_level || null,
+      health: snapshot?.status?.health ?? null,
+    },
+  })
+}
+
 function createDaemon({
   bot,
   llm,
@@ -330,6 +354,7 @@ function createDaemon({
   let activeTask = null
   let lastCycleSnapshot = null
   const stateTransitionTrace = []
+  let pendingDamageInterrupt = null
 
   const taskSm = createTaskStateMachine()
 
@@ -381,7 +406,36 @@ function createDaemon({
     snapshot,
     ctx,
   }) {
-    if (!interrupt?.shouldInterrupt || !reflexAction) return null
+    if (!interrupt?.shouldInterrupt) {
+      await logger.log({
+        type: 'interrupt_ignored',
+        cycle: cycleCount,
+        source: interrupt?.source || source,
+        shouldInterrupt: false,
+        priority: interrupt?.priority || 'low',
+        interruptReason: interrupt?.interruptReason || 'no_interrupt',
+        matchedRuleId: interrupt?.metadata?.ruleId || null,
+        reason: 'decision_false',
+        executionLock: executionLocked(),
+        taskState: taskSm.getState().state,
+      })
+      return null
+    }
+    if (!reflexAction) {
+      await logger.log({
+        type: 'interrupt_ignored',
+        cycle: cycleCount,
+        source: interrupt.source || source,
+        shouldInterrupt: true,
+        priority: interrupt.priority,
+        interruptReason: interrupt.interruptReason,
+        matchedRuleId: interrupt?.metadata?.ruleId || null,
+        reason: 'no_reflex_action_available',
+        executionLock: executionLocked(),
+        taskState: taskSm.getState().state,
+      })
+      return null
+    }
     await logger.log({
       type: 'daemon_reflex',
       cycle: cycleCount,
@@ -391,6 +445,20 @@ function createDaemon({
       interruptReason: interrupt.interruptReason,
       interruptMetadata: interrupt.metadata || {},
       source,
+    })
+    await logger.log({
+      type: 'interrupt_applied',
+      cycle: cycleCount,
+      source: interrupt.source || source,
+      shouldInterrupt: true,
+      priority: interrupt.priority,
+      interruptReason: interrupt.interruptReason,
+      matchedRuleId: interrupt?.metadata?.ruleId || null,
+      accepted: true,
+      executionLock: executionLocked(),
+      taskState: taskSm.getState().state,
+      goal: activeTask?.goal || null,
+      skillName: activeTask?.skillName || null,
     })
     try {
       taskSm.setExecutionLock(true, `${source}_reflex_action`)
@@ -547,19 +615,69 @@ function createDaemon({
       recentDamageMs: lastDamageAt ? (Date.now() - lastDamageAt) : null,
     }
 
-    const highPriorityInterrupt = ctx.snapshot?.close_threat === true
-      || (ctx.snapshot?.status?.recentDamageMs != null && ctx.snapshot.status.recentDamageMs < 2500)
-    if (executionLocked() && !taskSm.shouldInterruptExecution({
-      reflexTriggered: false,
-      highPriorityInterrupt,
-      significantWorldChange: hasSignificantChange,
-    })) {
+    const worldChangeDecision = buildWorldChangeInterrupt({
+      changed: hasSignificantChange,
+      cycle: cycleCount,
+      snapshot: ctx.snapshot,
+    })
+    const immediateDangerDecision = (ctx.snapshot?.close_threat === true
+      || (ctx.snapshot?.status?.recentDamageMs != null && ctx.snapshot.status.recentDamageMs < 2500))
+      ? systemInterrupt({
+        source: 'system',
+        priority: 'high',
+        interruptReason: 'high_priority_danger_window',
+        metadata: {
+          cycle: cycleCount,
+          closeThreat: ctx.snapshot?.close_threat === true,
+          recentDamageMs: ctx.snapshot?.status?.recentDamageMs ?? null,
+        },
+      })
+      : noInterrupt({ source: 'system', reason: 'no_high_priority_window', metadata: { cycle: cycleCount } })
+
+    const pendingDecisions = [
+      pendingDamageInterrupt,
+      immediateDangerDecision,
+      worldChangeDecision,
+    ].filter((d) => d && d.shouldInterrupt)
+      .sort((a, b) => {
+        const rank = { fatal_immediate: 4, high: 3, medium: 2, low: 1 }
+        return (rank[b.priority] || 0) - (rank[a.priority] || 0)
+      })
+    const topDecision = pendingDecisions[0] || noInterrupt({
+      source: 'system',
+      reason: 'no_interrupt_candidate',
+      metadata: { cycle: cycleCount },
+    })
+
+    await logger.log({
+      type: 'interrupt_decision',
+      cycle: cycleCount,
+      source: topDecision.source,
+      shouldInterrupt: topDecision.shouldInterrupt,
+      priority: topDecision.priority,
+      interruptReason: topDecision.interruptReason,
+      matchedRuleId: topDecision?.metadata?.ruleId || null,
+      executionLock: executionLocked(),
+      taskState: taskSm.getState().state,
+      goal: activeTask?.goal || null,
+      skillName: activeTask?.skillName || null,
+    })
+    if (topDecision?.source === 'damage') pendingDamageInterrupt = null
+
+    if (executionLocked() && !taskSm.shouldInterruptExecution(topDecision)) {
       await logger.log({
-        type: 'daemon_execution_lock_hold',
+        type: 'interrupt_ignored',
         cycle: cycleCount,
-        reason: 'execution_in_progress',
+        source: topDecision.source,
+        shouldInterrupt: topDecision.shouldInterrupt,
+        priority: topDecision.priority,
+        interruptReason: topDecision.interruptReason,
+        matchedRuleId: topDecision?.metadata?.ruleId || null,
+        reason: 'execution_lock_and_policy_reject',
         state: taskSm.getState().state,
         executionLock: true,
+        goal: activeTask?.goal || null,
+        skillName: activeTask?.skillName || null,
       })
       return { type: 'executing_hold', elapsedMs: Date.now() - cycleStart }
     }
@@ -863,14 +981,20 @@ function createDaemon({
       type: 'daemon_start', ts: nowIso(), thinkIntervalMs,
     })
 
-    // Real-time damage interrupt: when hit during execution, force a reflex check next cycle
-    // TODO(phase3.5-followup): migrate damageInterrupt into taskSm-owned interrupt queue.
-    let damageInterrupt = false
+    // Real-time damage interrupt is represented as a structured decision (pendingDamageInterrupt).
     healthListener = () => {
       if (bot.health < (bot._lastDaemonHealth ?? 20)) {
-        damageInterrupt = true
         lastDamageAt = Date.now()
         if (typeof reflexLayer?.noteDamage === 'function') reflexLayer.noteDamage()
+        pendingDamageInterrupt = systemInterrupt({
+          source: 'damage',
+          priority: 'high',
+          interruptReason: 'recent_damage_event',
+          metadata: {
+            cycle: cycleCount,
+            health: bot.health,
+          },
+        })
       }
       bot._lastDaemonHealth = bot.health
     }
@@ -953,13 +1077,11 @@ function createDaemon({
       try {
         // If damage was taken mid-execution, run an immediate reflex check
         // Skip if bot is actively digging (unless critical health)
-        if (damageInterrupt && reflexLayer && !executionLocked()
+        if (pendingDamageInterrupt && reflexLayer && !executionLocked()
             && (!bot.targetDigBlock || (bot.health ?? 20) <= 5)) {
-          damageInterrupt = false
           const emergencySnapshot = sense(bot, { radius: 5 })
-          const interrupt = typeof reflexLayer.arbitrate === 'function'
-            ? reflexLayer.arbitrate(emergencySnapshot, { snapshot: emergencySnapshot, cycle: cycleCount })
-            : null
+          const interrupt = pendingDamageInterrupt
+          pendingDamageInterrupt = null
           const reflexAction = reflexLayer.check(emergencySnapshot, {})
           if (reflexAction) {
             await logger.log({
@@ -967,19 +1089,19 @@ function createDaemon({
               action: reflexAction.name, reason: reflexAction.reason,
               health: bot.health,
             })
-            await executeInterruptTakeover({
-              source: 'damage_interrupt',
-              interrupt: interrupt || {
-                shouldInterrupt: true,
-                priority: 'high',
-                interruptReason: 'damage_interrupt',
-              },
-              reflexAction,
-              snapshot: emergencySnapshot,
-              ctx: { snapshot: emergencySnapshot, cycle: cycleCount },
-            })
-            continue
           }
+          await executeInterruptTakeover({
+            source: 'damage_interrupt',
+            interrupt: interrupt || systemInterrupt({
+              source: 'damage',
+              priority: 'high',
+              interruptReason: 'damage_interrupt',
+            }),
+            reflexAction,
+            snapshot: emergencySnapshot,
+            ctx: { snapshot: emergencySnapshot, cycle: cycleCount },
+          })
+          continue
         }
 
         if (!bot.targetDigBlock) {

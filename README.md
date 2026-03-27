@@ -42,6 +42,7 @@ The current system is **partially structured**, but still relies significantly o
 - The daemon runtime now uses a task state machine (`taskStateMachine`) to gate planning vs execution by default.
 - Replanning is blocked during active execution lock unless interrupt policy allows takeover (reflex/high-priority/state-change).
 - Reflex/interrupt arbitration now uses explicit priority levels and structured interrupt outputs before planner execution.
+- Interrupt decisions are normalized via a shared contract (`interruptDecision`) and logged as decision/applied/ignored events.
 - LLM-generated skills are still supported via sandbox and remain part of the system for controlled synthesis.
 - Stable skills and generated skills now coexist; generated code is no longer the only behavior route.
 

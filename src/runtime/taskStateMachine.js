@@ -116,13 +116,18 @@ function createTaskStateMachine({
     return ['idle', 'assessing', 'planning', 'interrupted', 'recovering', 'completed', 'failed', 'cooling_down'].includes(state.current)
   }
 
-  function shouldInterruptExecution({
-    reflexTriggered = false,
-    highPriorityInterrupt = false,
-    significantWorldChange = false,
-  } = {}) {
+  function shouldInterruptExecution(decision = null) {
     if (!state.executionLock) return false
-    return !!(reflexTriggered || highPriorityInterrupt || significantWorldChange)
+    if (!decision || decision.shouldInterrupt !== true) return false
+    const p = String(decision.priority || 'low')
+    if (p === 'fatal_immediate' || p === 'high') return true
+    if (p === 'medium') return true
+    if (p === 'low') {
+      const src = String(decision.source || '')
+      if (src === 'world_change' || src === 'system') return true
+      return false
+    }
+    return false
   }
 
   return Object.freeze({

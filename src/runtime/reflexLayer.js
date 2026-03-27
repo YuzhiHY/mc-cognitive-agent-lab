@@ -6,6 +6,10 @@ const {
   failureResult,
   invalidResult,
 } = require('./contracts/executionResult')
+const {
+  noInterrupt,
+  reflexInterrupt,
+} = require('./contracts/interruptDecision')
 
 const HOSTILE_MOBS = new Set([
   'zombie', 'skeleton', 'creeper', 'spider', 'cave_spider', 'enderman',
@@ -543,24 +547,19 @@ function createReflexLayer(bot) {
 
   function buildInterrupt(rule, snapshot, ctx) {
     if (!rule) {
-      return {
-        shouldInterrupt: false,
-        priority: 'low',
-        interruptReason: 'none',
-        suggestedSkill: null,
-        fallbackMode: null,
+      return noInterrupt({
+        source: 'reflex',
+        reason: 'no_reflex_match',
         metadata: {
           cycle: ctx?.cycle || null,
           threat: snapshot?.threat_level || null,
         },
-      }
+      })
     }
-    return {
-      shouldInterrupt: true,
+    return reflexInterrupt({
       priority: levelFromScore(Number(rule.priority || 0)),
       interruptReason: rule.reason || rule.name || 'reflex_interrupt',
       suggestedSkill: rule.name || null,
-      fallbackMode: 'reflex_safe',
       metadata: {
         ruleId: rule.id || null,
         ruleName: rule.name || null,
@@ -568,8 +567,9 @@ function createReflexLayer(bot) {
         cycle: ctx?.cycle || null,
         threat: snapshot?.threat_level || null,
         closeThreat: snapshot?.close_threat === true,
+        health: snapshot?.status?.health ?? null,
       },
-    }
+    })
   }
 
   function arbitrate(snapshot, ctx) {

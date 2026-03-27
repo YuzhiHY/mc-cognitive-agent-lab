@@ -1,5 +1,6 @@
 const assert = require('node:assert')
 const { createTaskStateMachine } = require('../src/runtime/taskStateMachine')
+const { systemInterrupt, noInterrupt } = require('../src/runtime/contracts/interruptDecision')
 
 async function testNoReplanningWhileExecuting() {
   const sm = createTaskStateMachine()
@@ -15,7 +16,11 @@ async function testReflexTakeoverInterruptsExecution() {
   sm.transition('assessing', { reason: 'start' })
   sm.transition('planning', { reason: 'plan' })
   sm.transition('executing', { reason: 'run_chain' })
-  const shouldInterrupt = sm.shouldInterruptExecution({ reflexTriggered: true })
+  const shouldInterrupt = sm.shouldInterruptExecution(systemInterrupt({
+    source: 'reflex',
+    priority: 'high',
+    interruptReason: 'reflex_takeover',
+  }))
   assert.strictEqual(shouldInterrupt, true)
   sm.transition('interrupted', { reason: 'reflex_takeover' })
   assert.strictEqual(sm.getState().state, 'interrupted')
@@ -54,6 +59,11 @@ async function run() {
   await testReflexTakeoverInterruptsExecution()
   await testFailedGoesToRecoveryOrReassess()
   await testCompletionUnlocksPlanning()
+  const sm = createTaskStateMachine()
+  sm.transition('assessing', { reason: 'x' })
+  sm.transition('planning', { reason: 'x' })
+  sm.transition('executing', { reason: 'x' })
+  assert.strictEqual(sm.shouldInterruptExecution(noInterrupt({ source: 'system' })), false)
   // eslint-disable-next-line no-console
   console.log('task state machine tests passed')
 }
