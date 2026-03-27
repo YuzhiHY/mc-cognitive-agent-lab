@@ -59,6 +59,14 @@ function createTaskStateMachine({
 
   function transition(to, { reason = null, meta = null, force = false } = {}) {
     const from = state.current
+    if (!STATES.includes(to)) {
+      return {
+        ok: false,
+        from,
+        to,
+        reason: 'unknown_state',
+      }
+    }
     if (!force && !canTransition(from, to)) {
       return {
         ok: false,

@@ -1,3 +1,8 @@
+// Transitional legacy helper:
+// - kept for craft/smelt/torch stability during Phase 3.5
+// - new behavior logic should be added as modular skills under src/runtime/skills/*
+// - TODO(phase4): split this file into dedicated skill-facing modules and keep API primitive-only
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }

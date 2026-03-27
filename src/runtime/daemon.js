@@ -323,15 +323,19 @@ function createDaemon({
   let stopped = false
   let started = false
   let cycleCount = 0
-  let isExecuting = false
   let lastDamageAt = 0
   let healthListener = null
   let chatListener = null
   let reflexTicker = null
   let activeTask = null
   let lastCycleSnapshot = null
+  const stateTransitionTrace = []
 
   const taskSm = createTaskStateMachine()
+
+  function executionLocked() {
+    return taskSm.isExecutionLocked()
+  }
 
   const personalityEnabled =
     String(process.env.PERSONALITY_ENABLED || 'false').toLowerCase() === 'true'
@@ -370,6 +374,82 @@ function createDaemon({
       && chainResult.results.every((r) => r?.status === 'success' || r?.ok === true)
   }
 
+  async function executeInterruptTakeover({
+    source = 'cycle',
+    interrupt,
+    reflexAction,
+    snapshot,
+    ctx,
+  }) {
+    if (!interrupt?.shouldInterrupt || !reflexAction) return null
+    await logger.log({
+      type: 'daemon_reflex',
+      cycle: cycleCount,
+      action: reflexAction.name,
+      reason: reflexAction.reason,
+      interruptPriority: interrupt.priority,
+      interruptReason: interrupt.interruptReason,
+      interruptMetadata: interrupt.metadata || {},
+      source,
+    })
+    try {
+      taskSm.setExecutionLock(true, `${source}_reflex_action`)
+      await setTaskState('interrupted', {
+        reason: `${source}_reflex_takeover`,
+        cycle: cycleCount,
+        skillName: reflexAction.name,
+      })
+      try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
+      try { api.clearControlStates?.() } catch { /* */ }
+      const reflexResult = typeof reflexLayer.execute === 'function'
+        ? await reflexLayer.execute(reflexAction, { api, bot, ctx: ctx || { snapshot } })
+        : await reflexAction.execute({ api, bot, ctx: ctx || { snapshot } })
+      metrics.reflexCount += 1
+      await logger.log({
+        type: 'daemon_reflex_result',
+        cycle: cycleCount,
+        status: reflexResult?.status || null,
+        reason: reflexResult?.reason || reflexAction.reason,
+        ok: reflexResult?.ok ?? true,
+        actionType: reflexResult?.actionType || reflexAction.name,
+        interruptPriority: interrupt.priority,
+        source,
+      })
+      taskSm.setExecutionLock(false, `${source}_reflex_done`)
+      await setTaskState('recovering', {
+        reason: `${source}_reflex_recover`,
+        cycle: cycleCount,
+        goal: activeTask?.goal || null,
+        skillName: reflexAction.name,
+      })
+      return {
+        type: 'reflex',
+        action: reflexAction.name,
+        interruptPriority: interrupt.priority,
+        interruptReason: interrupt.interruptReason,
+      }
+    } catch (err) {
+      metrics.errorCount += 1
+      taskSm.setExecutionLock(false, `${source}_reflex_error`)
+      await setTaskState('failed', {
+        reason: `${source}_reflex_failed`,
+        error: err.message || String(err),
+        cycle: cycleCount,
+        skillName: reflexAction.name,
+      })
+      await logger.log({
+        type: 'daemon_reflex_error',
+        cycle: cycleCount,
+        action: reflexAction.name,
+        error: err.message || String(err),
+        source,
+      })
+      return { type: 'error', error: err.message || String(err) }
+    } finally {
+      taskSm.setExecutionLock(false, `${source}_reflex_exit`)
+    }
+  }
+
   async function setTaskState(state, extra = {}) {
     if (!activeTask) {
       activeTask = {
@@ -378,14 +458,26 @@ function createDaemon({
         createdAt: nowIso(),
       }
     }
+    // TODO(phase3.5-followup): activeTask.state currently mirrors taskSm state for log payload
+    // compatibility. Remove duplicate storage once downstream consumers read taskSm directly.
     const prev = taskSm.getState()
-    taskSm.transition(state, {
+    const tx = taskSm.transition(state, {
       reason: extra.reason || null,
       meta: extra || null,
-      force: true,
+      force: extra.force === true,
     })
     const cur = taskSm.getState()
-    isExecuting = cur.executionLock
+    if (!tx?.ok) {
+      await logger.log({
+        type: 'daemon_state_transition_rejected',
+        taskId: activeTask.id,
+        from: prev.state,
+        to: state,
+        reason: tx?.reason || 'invalid_transition',
+        cycle: extra.cycle ?? cycleCount,
+      })
+      return
+    }
     activeTask = {
       ...activeTask,
       state: cur.state,
@@ -406,7 +498,22 @@ function createDaemon({
       to: cur.state,
       executionLock: cur.executionLock,
       reason: extra.reason || null,
+      cycle: extra.cycle ?? cycleCount,
+      goal: extra.goal || null,
+      skillName: extra.skillName || null,
+      chainSignature: extra.chainSignature || null,
     })
+    stateTransitionTrace.push({
+      from: prev.state,
+      to: cur.state,
+      reason: extra.reason || null,
+      executionLock: cur.executionLock,
+      cycle: extra.cycle ?? cycleCount,
+      goal: extra.goal || null,
+      skillName: extra.skillName || null,
+      chainSignature: extra.chainSignature || null,
+    })
+    if (stateTransitionTrace.length > 80) stateTransitionTrace.shift()
   }
 
   async function runCycle() {
@@ -417,7 +524,7 @@ function createDaemon({
     const hasSignificantChange = significantWorldStateChange(lastCycleSnapshot, snapshot)
     lastCycleSnapshot = snapshot
 
-    await setTaskState('assessing', { reason: 'cycle_assess' })
+    await setTaskState('assessing', { reason: 'cycle_assess', cycle: cycleCount })
 
     const memoryHint = await buildMemoryHint({
       currentPos: snapshot.status?.position,
@@ -442,7 +549,7 @@ function createDaemon({
 
     const highPriorityInterrupt = ctx.snapshot?.close_threat === true
       || (ctx.snapshot?.status?.recentDamageMs != null && ctx.snapshot.status.recentDamageMs < 2500)
-    if (taskSm.isExecutionLocked() && !taskSm.shouldInterruptExecution({
+    if (executionLocked() && !taskSm.shouldInterruptExecution({
       reflexTriggered: false,
       highPriorityInterrupt,
       significantWorldChange: hasSignificantChange,
@@ -451,49 +558,33 @@ function createDaemon({
         type: 'daemon_execution_lock_hold',
         cycle: cycleCount,
         reason: 'execution_in_progress',
+        state: taskSm.getState().state,
+        executionLock: true,
       })
       return { type: 'executing_hold', elapsedMs: Date.now() - cycleStart }
     }
 
-    // Phase 5D: reflex layer check
+    // Reflex/interrupt arbitration is always checked before planner.
     if (reflexLayer) {
-      const reflexAction = reflexLayer.check(snapshot, ctx)
-      if (reflexAction) {
-        await logger.log({
-          type: 'daemon_reflex', cycle: cycleCount,
-          action: reflexAction.name, reason: reflexAction.reason,
-        })
-        try {
-          isExecuting = true
-          taskSm.setExecutionLock(true, 'reflex_action')
-          await setTaskState('interrupted', { reason: 'reflex_takeover' })
-          try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
-          try { api.clearControlStates?.() } catch { /* */ }
-          const reflexResult = typeof reflexLayer.execute === 'function'
-            ? await reflexLayer.execute(reflexAction, { api, bot, ctx })
-            : await reflexAction.execute({ api, bot, ctx })
-          metrics.reflexCount += 1
-          await logger.log({
-            type: 'daemon_reflex_result',
-            cycle: cycleCount,
-            status: reflexResult?.status || null,
-            reason: reflexResult?.reason || reflexAction.reason,
-            ok: reflexResult?.ok ?? true,
-            actionType: reflexResult?.actionType || reflexAction.name,
-          })
-          taskSm.setExecutionLock(false, `reflex:${reflexAction.name}`)
-          await setTaskState('recovering', { reason: `reflex:${reflexAction.name}` })
-        } catch (err) {
-          metrics.errorCount += 1
-          taskSm.setExecutionLock(false, `reflex_error:${reflexAction.name}`)
-          await setTaskState('failed', { reason: `reflex:${reflexAction.name}`, error: err.message || String(err) })
-          await logger.log({
-            type: 'daemon_reflex_error', cycle: cycleCount,
-            action: reflexAction.name, error: err.message,
-          })
-        } finally {
-          isExecuting = false
+      const interrupt = typeof reflexLayer.arbitrate === 'function'
+        ? reflexLayer.arbitrate(snapshot, ctx)
+        : {
+          shouldInterrupt: !!reflexLayer.check(snapshot, ctx),
+          priority: 'high',
+          interruptReason: 'legacy_reflex',
+          suggestedSkill: null,
+          fallbackMode: 'reflex_safe',
+          metadata: {},
         }
+      if (interrupt?.shouldInterrupt) {
+        const reflexAction = reflexLayer.check(snapshot, ctx)
+        const out = await executeInterruptTakeover({
+          source: 'cycle',
+          interrupt,
+          reflexAction,
+          snapshot,
+          ctx,
+        })
         if (personality.isEnabled()) {
           try {
             await personality.processEvent(
@@ -502,12 +593,31 @@ function createDaemon({
             )
           } catch { /* personality must never break daemon */ }
         }
-        return { type: 'reflex', action: reflexAction.name, elapsedMs: Date.now() - cycleStart }
+        return { ...(out || { type: 'reflex' }), elapsedMs: Date.now() - cycleStart }
       }
     }
 
     // Phase 5B: central reasoning (3-phase)
     if (centralReasoning) {
+      if (!taskSm.canPlan()) {
+        await logger.log({
+          type: 'daemon_planner_gate',
+          cycle: cycleCount,
+          allowed: false,
+          reason: 'task_state_machine_canPlan_false',
+          state: taskSm.getState().state,
+          executionLock: taskSm.getState().executionLock,
+        })
+        return { type: 'planner_gated', elapsedMs: Date.now() - cycleStart }
+      }
+      await logger.log({
+        type: 'daemon_planner_gate',
+        cycle: cycleCount,
+        allowed: true,
+        reason: 'task_state_machine_canPlan_true',
+        state: taskSm.getState().state,
+        executionLock: taskSm.getState().executionLock,
+      })
       if (typeof reflexLayer?.isCombatMode === 'function' && reflexLayer.isCombatMode()) {
         metrics.combatHoldCount += 1
         await logger.log({
@@ -519,8 +629,11 @@ function createDaemon({
         return { type: 'combat_mode_hold', elapsedMs: Date.now() - cycleStart }
       }
       try {
-        isExecuting = true
-        await setTaskState('planning', { reason: 'central_reasoning' })
+        await setTaskState('planning', {
+          reason: 'central_reasoning',
+          cycle: cycleCount,
+          goal: activeTask?.goal || null,
+        })
         const decision = await centralReasoning.think({
           ctx,
           bot,
@@ -534,13 +647,13 @@ function createDaemon({
         if (personality.isEnabled()) {
           const pState = personality.getState()
           const sayText = formatVoiceOutput(pState?.voice, {
-            taskBusy: isExecuting || !!bot.pathfinder?.goal,
+            taskBusy: executionLocked() || !!bot.pathfinder?.goal,
           })
           if (Date.now() - lastVoiceAt > voiceCooldownMs(ctx.snapshot)
               && shouldSpeakVoice({
                 voice: sayText,
                 snapshot: ctx.snapshot,
-                isExecuting,
+                isExecuting: executionLocked(),
                 recentVoices,
               })) {
             bot.chat(sayText)
@@ -556,6 +669,7 @@ function createDaemon({
           actionChainLength: decision?.actionChain?.length || 0,
           goalHint: decision?.nextGoalHint || null,
         })
+        const chainSignature = compactChainSignature(decision?.actionChain || [])
 
         // Apply memory updates from central LLM
         if (memory && Array.isArray(decision?.memoryUpdates)) {
@@ -573,7 +687,12 @@ function createDaemon({
           const freshSnapshot = sense(bot, { radius: 5 })
           const freshCtx = { ...ctx, snapshot: freshSnapshot }
           taskSm.setExecutionLock(true, 'chain_execute')
-          await setTaskState('executing', { reason: 'chain_execute' })
+          await setTaskState('executing', {
+            reason: 'chain_execute',
+            cycle: cycleCount,
+            goal: decision?.nextGoalHint || null,
+            chainSignature,
+          })
           const chainResult = await chainExecutor.run({
             chain: decision.actionChain,
             api,
@@ -672,24 +791,45 @@ function createDaemon({
           await setTaskState(success ? 'completed' : 'failed', {
             reason: success ? 'chain_completed' : 'chain_failed',
             error: success ? null : (chainResult.failedStep?.error?.message || 'chain_failed'),
+            cycle: cycleCount,
+            goal: decision?.nextGoalHint || null,
+            chainSignature,
           })
+          if (!success) {
+            const failedMsg = String(chainResult?.failedStep?.error?.message || '').toLowerCase()
+            if (failedMsg.includes('stuck') || failedMsg.includes('no path') || failedMsg.includes('path')) {
+              reflexLayer?.noteStuck?.()
+            }
+            await setTaskState('recovering', {
+              reason: 'post_failure_recover',
+              cycle: cycleCount,
+              goal: decision?.nextGoalHint || null,
+              chainSignature,
+            })
+          }
         } else {
           taskSm.setExecutionLock(false, 'no_chain')
-          await setTaskState('completed', { reason: 'no_chain' })
+          await setTaskState('completed', {
+            reason: 'no_chain',
+            cycle: cycleCount,
+            goal: decision?.nextGoalHint || null,
+          })
         }
 
         return { type: 'reasoning', elapsedMs: Date.now() - cycleStart }
       } catch (err) {
         metrics.errorCount += 1
         taskSm.setExecutionLock(false, 'reasoning_error')
-        await setTaskState('failed', { reason: 'reasoning_error', error: err.message || String(err) })
+        await setTaskState('failed', {
+          reason: 'reasoning_error',
+          error: err.message || String(err),
+          cycle: cycleCount,
+        })
         await logger.log({
           type: 'daemon_reasoning_error', cycle: cycleCount,
           error: err.message || String(err),
         })
         return { type: 'error', error: err.message, elapsedMs: Date.now() - cycleStart }
-      } finally {
-        isExecuting = false
       }
     }
 
@@ -724,6 +864,7 @@ function createDaemon({
     })
 
     // Real-time damage interrupt: when hit during execution, force a reflex check next cycle
+    // TODO(phase3.5-followup): migrate damageInterrupt into taskSm-owned interrupt queue.
     let damageInterrupt = false
     healthListener = () => {
       if (bot.health < (bot._lastDaemonHealth ?? 20)) {
@@ -745,13 +886,13 @@ function createDaemon({
         const result = await personality.consultSync(brief)
         const live = sense(bot, { radius: 5, farScan: false })
         const sayText = formatVoiceOutput(result?.voice, {
-          taskBusy: isExecuting || !!bot.pathfinder?.goal,
+          taskBusy: executionLocked() || !!bot.pathfinder?.goal,
         })
         if (Date.now() - lastVoiceAt > voiceCooldownMs(live)
             && shouldSpeakVoice({
               voice: sayText,
               snapshot: live,
-              isExecuting,
+            isExecuting: executionLocked(),
               recentVoices,
             })) {
           bot.chat(sayText)
@@ -777,13 +918,15 @@ function createDaemon({
       const emergency = snapshot?.close_threat === true || nearest <= 3.2 || (bot.health ?? 20) <= 6
       if (!emergency) return
       try {
+        const interrupt = typeof reflexLayer.arbitrate === 'function'
+          ? reflexLayer.arbitrate(snapshot, { snapshot, cycle: cycleCount })
+          : null
+        if (!interrupt?.shouldInterrupt) return
         const reflexAction = reflexLayer.check(snapshot, { snapshot, cycle: cycleCount })
         if (!reflexAction) return
         // Ignore low-urgency reflexes in high-frequency lane.
         const urgent = ['flee_burst', 'fight_back', 'emergency_jump', 'flee']
         if (!urgent.includes(reflexAction.name)) return
-        try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
-        try { api.clearControlStates?.() } catch { /* */ }
         await logger.log({
           type: 'daemon_fast_reflex',
           cycle: cycleCount,
@@ -791,14 +934,18 @@ function createDaemon({
           reason: reflexAction.reason,
           nearestHostile: nearest,
           health: bot.health,
+          interruptPriority: interrupt.priority,
         })
-        if (typeof reflexLayer.execute === 'function') {
-          await reflexLayer.execute(reflexAction, { api, bot, ctx: { snapshot } })
-        } else {
-          await reflexAction.execute({ api, bot, ctx: { snapshot } })
-        }
+        await executeInterruptTakeover({
+          source: 'fast_ticker',
+          interrupt,
+          reflexAction,
+          snapshot,
+          ctx: { snapshot, cycle: cycleCount },
+        })
       } catch {
         // fast reflex must never crash daemon
+        taskSm.setExecutionLock(false, 'fast_reflex_error')
       }
     }, 120)
 
@@ -806,10 +953,13 @@ function createDaemon({
       try {
         // If damage was taken mid-execution, run an immediate reflex check
         // Skip if bot is actively digging (unless critical health)
-        if (damageInterrupt && reflexLayer && !isExecuting
+        if (damageInterrupt && reflexLayer && !executionLocked()
             && (!bot.targetDigBlock || (bot.health ?? 20) <= 5)) {
           damageInterrupt = false
           const emergencySnapshot = sense(bot, { radius: 5 })
+          const interrupt = typeof reflexLayer.arbitrate === 'function'
+            ? reflexLayer.arbitrate(emergencySnapshot, { snapshot: emergencySnapshot, cycle: cycleCount })
+            : null
           const reflexAction = reflexLayer.check(emergencySnapshot, {})
           if (reflexAction) {
             await logger.log({
@@ -817,23 +967,22 @@ function createDaemon({
               action: reflexAction.name, reason: reflexAction.reason,
               health: bot.health,
             })
-            try {
-              isExecuting = true
-              try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
-              try { api.clearControlStates?.() } catch { /* */ }
-              if (typeof reflexLayer.execute === 'function') {
-                await reflexLayer.execute(reflexAction, { api, bot, ctx: {} })
-              } else {
-                await reflexAction.execute({ api, bot, ctx: {} })
-              }
-            } catch { /* reflex must not crash */ } finally {
-              isExecuting = false
-            }
+            await executeInterruptTakeover({
+              source: 'damage_interrupt',
+              interrupt: interrupt || {
+                shouldInterrupt: true,
+                priority: 'high',
+                interruptReason: 'damage_interrupt',
+              },
+              reflexAction,
+              snapshot: emergencySnapshot,
+              ctx: { snapshot: emergencySnapshot, cycle: cycleCount },
+            })
             continue
           }
         }
 
-        if (!isExecuting && !bot.targetDigBlock) {
+        if (!bot.targetDigBlock) {
           const result = await runCycle()
           if (result.type !== 'idle') {
             // eslint-disable-next-line no-console
@@ -861,7 +1010,7 @@ function createDaemon({
     }
 
     taskSm.setExecutionLock(false, 'daemon_stop')
-    await setTaskState('cooling_down', { reason: 'daemon_stop' })
+    await setTaskState('cooling_down', { reason: 'daemon_stop', force: true, cycle: cycleCount })
     await logger.log({ type: 'daemon_stop', ts: nowIso(), totalCycles: cycleCount })
     const readiness = {
       combatReflexReady: metrics.reflexCount > 0,
@@ -898,7 +1047,21 @@ function createDaemon({
     return taskSm.getState()
   }
 
-  return Object.freeze({ start, stop, getTaskState })
+  function getStateTransitionTrace() {
+    return stateTransitionTrace.slice()
+  }
+
+  async function runSingleCycleForTest() {
+    return runCycle()
+  }
+
+  return Object.freeze({
+    start,
+    stop,
+    getTaskState,
+    getStateTransitionTrace,
+    runSingleCycleForTest,
+  })
 }
 
 module.exports = { createDaemon }

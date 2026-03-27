@@ -39,6 +39,9 @@ The current system is **partially structured**, but still relies significantly o
 
 - The runtime is actively transitioning away from a codegen-first default loop.
 - A modular skill layer now exists under `src/runtime/skills/` and is used as a first-class execution path (`skill_ref`).
+- The daemon runtime now uses a task state machine (`taskStateMachine`) to gate planning vs execution by default.
+- Replanning is blocked during active execution lock unless interrupt policy allows takeover (reflex/high-priority/state-change).
+- Reflex/interrupt arbitration now uses explicit priority levels and structured interrupt outputs before planner execution.
 - LLM-generated skills are still supported via sandbox and remain part of the system for controlled synthesis.
 - Stable skills and generated skills now coexist; generated code is no longer the only behavior route.
 

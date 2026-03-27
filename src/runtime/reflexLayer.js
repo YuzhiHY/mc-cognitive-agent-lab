@@ -205,10 +205,19 @@ function createReflexLayer(bot) {
   let beingAttacked = false
   let lastAttackAt = 0
   let combatModeUntilTs = 0
+  let recentStuckCount = 0
+  let lastStuckAt = 0
+  let recentDamageEvents = []
+  let lastDamageAt = 0
 
   if (bot) {
     bot.on('health', () => {
-      if (bot.health < lastHealth) beingAttacked = true
+      if (bot.health < lastHealth) {
+        beingAttacked = true
+        lastDamageAt = Date.now()
+        recentDamageEvents.push(lastDamageAt)
+        recentDamageEvents = recentDamageEvents.filter((t) => lastDamageAt - t <= 4000)
+      }
       lastHealth = bot.health
     })
   }
@@ -223,9 +232,39 @@ function createReflexLayer(bot) {
   }
   function noteDamage() {
     enterCombatMode(3000)
+    lastDamageAt = Date.now()
+    recentDamageEvents.push(lastDamageAt)
+    recentDamageEvents = recentDamageEvents.filter((t) => lastDamageAt - t <= 4000)
+  }
+  function noteStuck() {
+    const now = Date.now()
+    if (now - lastStuckAt > 6000) recentStuckCount = 0
+    recentStuckCount += 1
+    lastStuckAt = now
+  }
+  function hasDamageBurst() {
+    const now = Date.now()
+    recentDamageEvents = recentDamageEvents.filter((t) => now - t <= 2500)
+    return recentDamageEvents.length >= 2
   }
 
   const rules = [
+    {
+      id: 'falling_risk',
+      name: 'emergency_jump',
+      priority: 205,
+      condition: (snapshot) => {
+        const onGround = bot?.entity?.onGround
+        const vy = Number(bot?.entity?.velocity?.y ?? 0)
+        return onGround === false && vy < -0.9
+      },
+      reason: 'Falling risk detected',
+      execute: async ({ bot: b }) => {
+        b.setControlState('jump', true)
+        await sleep(220)
+        b.setControlState('jump', false)
+      },
+    },
     {
       id: 'emergency_lava',
       name: 'emergency_jump',
@@ -243,6 +282,65 @@ function createReflexLayer(bot) {
       },
     },
     {
+      id: 'fire_or_burn_danger',
+      name: 'flee_burst',
+      priority: 198,
+      condition: (snapshot) => {
+        const inLava = bot?.entity?.isInLava === true
+        const burning = bot?.entity?.isOnFire === true
+        return inLava || burning
+      },
+      reason: 'Burn/fire danger detected',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2000)
+        const v = vectorFromNearestHostile(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 900)
+        else {
+          b.setControlState('sprint', true)
+          b.setControlState('forward', true)
+          b.setControlState('jump', true)
+          await sleep(750)
+          b.setControlState('forward', false)
+          b.setControlState('sprint', false)
+          b.setControlState('jump', false)
+        }
+      },
+    },
+    {
+      id: 'drowning_or_unsafe_water',
+      name: 'flee_burst',
+      priority: 196,
+      condition: (snapshot) => {
+        const inWater = bot?.entity?.isInWater === true
+        const oxygenLow = Number(bot?.oxygenLevel ?? 20) <= 6
+        const hp = snapshot?.status?.health ?? 20
+        return inWater && (oxygenLow || hp <= 10)
+      },
+      reason: 'Unsafe water / drowning risk',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(1800)
+        b.setControlState('jump', true)
+        b.setControlState('forward', true)
+        b.setControlState('sprint', true)
+        await sleep(900)
+        b.setControlState('jump', false)
+        b.setControlState('forward', false)
+        b.setControlState('sprint', false)
+      },
+    },
+    {
+      id: 'recent_damage_burst',
+      name: 'flee_burst',
+      priority: 194,
+      condition: () => hasDamageBurst(),
+      reason: 'Recent damage burst',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2200)
+        const v = vectorFromNearestHostile(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 1000)
+      },
+    },
+    {
       id: 'creeper_close_pure_flee',
       name: 'flee_burst',
       priority: 198,
@@ -253,6 +351,21 @@ function createReflexLayer(bot) {
         const v = vectorFromNearestCreeper(b)
         if (v) await pureFleeBurst(b, v.dx, v.dz, 1100)
         resetAttackFlag()
+      },
+    },
+    {
+      id: 'repeated_stuck_recovery',
+      name: 'emergency_jump',
+      priority: 130,
+      condition: () => recentStuckCount >= 2 && Date.now() - lastStuckAt <= 4500,
+      reason: 'Repeated stuck state',
+      execute: async ({ bot: b }) => {
+        b.setControlState('jump', true)
+        b.setControlState('forward', true)
+        await sleep(450)
+        b.setControlState('jump', false)
+        b.setControlState('forward', false)
+        recentStuckCount = 0
       },
     },
     {
@@ -421,6 +534,49 @@ function createReflexLayer(bot) {
     },
   ]
 
+  function levelFromScore(score) {
+    if (score >= 190) return 'fatal_immediate'
+    if (score >= 130) return 'high'
+    if (score >= 90) return 'medium'
+    return 'low'
+  }
+
+  function buildInterrupt(rule, snapshot, ctx) {
+    if (!rule) {
+      return {
+        shouldInterrupt: false,
+        priority: 'low',
+        interruptReason: 'none',
+        suggestedSkill: null,
+        fallbackMode: null,
+        metadata: {
+          cycle: ctx?.cycle || null,
+          threat: snapshot?.threat_level || null,
+        },
+      }
+    }
+    return {
+      shouldInterrupt: true,
+      priority: levelFromScore(Number(rule.priority || 0)),
+      interruptReason: rule.reason || rule.name || 'reflex_interrupt',
+      suggestedSkill: rule.name || null,
+      fallbackMode: 'reflex_safe',
+      metadata: {
+        ruleId: rule.id || null,
+        ruleName: rule.name || null,
+        score: Number(rule.priority || 0),
+        cycle: ctx?.cycle || null,
+        threat: snapshot?.threat_level || null,
+        closeThreat: snapshot?.close_threat === true,
+      },
+    }
+  }
+
+  function arbitrate(snapshot, ctx) {
+    const rule = check(snapshot, ctx)
+    return buildInterrupt(rule, snapshot, ctx)
+  }
+
   function check(snapshot, ctx) {
     const triggered = rules
       .filter((rule) => {
@@ -472,6 +628,7 @@ function createReflexLayer(bot) {
   }
 
   return Object.freeze({
+    arbitrate,
     check,
     execute,
     rules,
@@ -479,6 +636,7 @@ function createReflexLayer(bot) {
     isCombatMode,
     enterCombatMode,
     noteDamage,
+    noteStuck,
     resetAttackFlag,
   })
 }

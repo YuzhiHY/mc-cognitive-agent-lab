@@ -462,6 +462,8 @@ function createApi(bot) {
     attackNearestResult: async (entityType) => api.executeAction('attackNearest', { entityType }),
   }
 
+  // Transitional compatibility bridge: craft/smelt/torch are delegated to stableSkillOps.
+  // TODO(phase4): move these into dedicated modular skills and keep API strictly primitive.
   const stableOps = createStableSkillOps(bot)
   api.smartCraft = async (itemName, count = 1) => stableOps.smartCraft(itemName, count)
   api.smeltItem = async (itemName, options = {}) => stableOps.smeltItem(itemName, options)
