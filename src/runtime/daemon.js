@@ -1,6 +1,6 @@
 const fs = require('node:fs')
 const path = require('node:path')
-const { sense, nearestHostileDistance } = require('./sense')
+const { sense, senseTiered, nearestHostileDistance } = require('./sense')
 const { createApi } = require('./api')
 const { createJsonlLogger } = require('./logger')
 const { buildMemoryHint } = require('./memoryHint')
@@ -712,7 +712,10 @@ function createDaemon({
     cycleCount += 1
     metrics.cycles += 1
     const cycleStart = Date.now()
-    const snapshot = sense(bot, { radius: 5 })
+    const tiered = senseTiered(bot, { radius: 5 }, {
+      recentDamageMs: lastDamageAt ? (Date.now() - lastDamageAt) : null,
+    })
+    const snapshot = tiered.flat
     const hasSignificantChange = significantWorldStateChange(lastCycleSnapshot, snapshot)
     lastCycleSnapshot = snapshot
 
@@ -727,6 +730,7 @@ function createDaemon({
 
     const ctx = {
       snapshot,
+      tiered,
       cycle: cycleCount,
       memory_hint: memoryHint,
       capabilities: typeof api.getCapabilities === 'function' ? api.getCapabilities() : {},
@@ -737,10 +741,6 @@ function createDaemon({
         primaryGoal: activeTask?.goal || process.env.TASK_GOAL || null,
         hadPlayerMessageBatch: pendingPlayerMessages.length > 0,
       },
-    }
-    ctx.snapshot.status = {
-      ...(ctx.snapshot.status || {}),
-      recentDamageMs: lastDamageAt ? (Date.now() - lastDamageAt) : null,
     }
 
     const worldChangeDecision = buildWorldChangeInterrupt({

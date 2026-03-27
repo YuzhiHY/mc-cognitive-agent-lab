@@ -54,7 +54,7 @@ function scoreCandidate(base, {
     if (!caps.hasFood) score -= 4
   }
   if (base.name === 'place_torch_safely') {
-    if (caps.hasTorch && (snapshot?.isNight === true || threatLevel !== 'none')) score += 2.1
+    if (caps.hasTorch && (snapshot?.status?.isNight === true || threatLevel !== 'none')) score += 2.1
     if (g.includes('torch') || g.includes('light') || g.includes('照明') || g.includes('火把')) score += 1.8
     if (!caps.hasTorch) score -= 2.6
   }

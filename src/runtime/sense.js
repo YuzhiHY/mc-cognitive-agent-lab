@@ -290,5 +290,43 @@ function sense(bot, { radius = 5, farScan = true } = {}) {
   }
 }
 
-module.exports = { sense, nearestHostileDistance, HOSTILE_MOBS }
+const { buildTieredSnapshot } = require('./contracts/perceptionSnapshot')
+
+/**
+ * Produce a tiered perception snapshot.
+ * @param {object} bot - Mineflayer bot
+ * @param {object} opts - { radius, farScan }
+ * @param {object} extras - { recentDamageMs, stuckLikely, memoryHints, capabilityHints, personalityModifiers, goalProgress }
+ * @returns {{ ts, reflex, execution, decision, semantic, flat }}
+ */
+function senseTiered(bot, { radius = 5, farScan = true } = {}, extras = {}) {
+  const blocks = getNearbyBlocks(bot, radius)
+  const entities = getNearestEntities(bot, 24)
+  const farResources = farScan ? getFarResources(bot, 32) : []
+  const status = getStatus(bot)
+  const inventory = getInventory(bot)
+  const bands = hostileDistanceBands(entities)
+  const threat = deriveThreatLevel(entities, status)
+  const nearestHostile = nearestHostileDistance(bot)
+  const closeThreat = nearestHostile <= 2.8
+  const resources = summarizeResources(blocks)
+  const obstacles = detectObstacles(blocks)
+
+  return buildTieredSnapshot({
+    bot,
+    status,
+    inventory,
+    blocks,
+    entities: entities.slice(0, 5),
+    farResources,
+    threat,
+    closeThreat,
+    nearestHostileDist: Number.isFinite(nearestHostile) ? round(nearestHostile, 2) : null,
+    bands,
+    resources,
+    obstacles,
+  }, extras)
+}
+
+module.exports = { sense, senseTiered, nearestHostileDistance, HOSTILE_MOBS }
 
