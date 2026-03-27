@@ -6,10 +6,12 @@ const { createJsonlLogger } = require('./logger')
 const { buildMemoryHint } = require('./memoryHint')
 const { createPersonality } = require('./personality')
 const { createTaskStateMachine } = require('./taskStateMachine')
+const { createInterruptQueue } = require('./interruptQueue')
 const {
   noInterrupt,
   systemInterrupt,
 } = require('./contracts/interruptDecision')
+const { createStableSkillRepository } = require('./skills')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -333,6 +335,33 @@ function buildWorldChangeInterrupt({ changed, cycle, snapshot }) {
   })
 }
 
+function inferExecutionMetaFromChain(chain, stableSkills) {
+  const arr = Array.isArray(chain) ? chain : []
+  const first = arr[0] || null
+  const chainSignature = compactChainSignature(arr)
+  let interruptible = true
+  let skillName = null
+  let timeoutMs = null
+  if (first?.type === 'skill_ref' && first?.name) {
+    skillName = String(first.name)
+    const skill = stableSkills?.get?.(skillName)
+    if (skill) {
+      interruptible = skill.canInterrupt !== false
+      timeoutMs = Number(skill.timeoutMs || 0) || null
+    }
+  } else if (first?.type === 'wait') {
+    interruptible = false
+    timeoutMs = Number(first.timeoutMs || 0) || null
+  }
+  return {
+    interruptible,
+    skillName,
+    chainSignature,
+    timeoutMs,
+    stepType: first?.type || null,
+  }
+}
+
 function createDaemon({
   bot,
   llm,
@@ -354,9 +383,12 @@ function createDaemon({
   let activeTask = null
   let lastCycleSnapshot = null
   const stateTransitionTrace = []
-  let pendingDamageInterrupt = null
+  const interruptQueue = createInterruptQueue()
+  let currentExecutionMeta = null
+  let currentSkillMeta = null
 
   const taskSm = createTaskStateMachine()
+  const stableSkills = createStableSkillRepository()
 
   function executionLocked() {
     return taskSm.isExecutionLocked()
@@ -405,6 +437,7 @@ function createDaemon({
     reflexAction,
     snapshot,
     ctx,
+    policyReason = null,
   }) {
     if (!interrupt?.shouldInterrupt) {
       await logger.log({
@@ -416,8 +449,12 @@ function createDaemon({
         interruptReason: interrupt?.interruptReason || 'no_interrupt',
         matchedRuleId: interrupt?.metadata?.ruleId || null,
         reason: 'decision_false',
+        policyReason: 'decision_false',
+        currentExecutionSkill: currentExecutionMeta?.skillName || null,
+        currentExecutionInterruptible: currentExecutionMeta?.interruptible ?? null,
+        fallbackMode: interrupt?.fallbackMode || null,
         executionLock: executionLocked(),
-        taskState: taskSm.getState().state,
+        currentTaskState: taskSm.getState().state,
       })
       return null
     }
@@ -431,8 +468,12 @@ function createDaemon({
         interruptReason: interrupt.interruptReason,
         matchedRuleId: interrupt?.metadata?.ruleId || null,
         reason: 'no_reflex_action_available',
+        policyReason: 'no_reflex_action_available',
+        currentExecutionSkill: currentExecutionMeta?.skillName || null,
+        currentExecutionInterruptible: currentExecutionMeta?.interruptible ?? null,
+        fallbackMode: interrupt?.fallbackMode || null,
         executionLock: executionLocked(),
-        taskState: taskSm.getState().state,
+        currentTaskState: taskSm.getState().state,
       })
       return null
     }
@@ -455,6 +496,10 @@ function createDaemon({
       interruptReason: interrupt.interruptReason,
       matchedRuleId: interrupt?.metadata?.ruleId || null,
       accepted: true,
+      policyReason: policyReason || 'accepted_by_policy',
+      currentExecutionSkill: currentExecutionMeta?.skillName || null,
+      currentExecutionInterruptible: currentExecutionMeta?.interruptible ?? null,
+      fallbackMode: interrupt?.fallbackMode || null,
       executionLock: executionLocked(),
       taskState: taskSm.getState().state,
       goal: activeTask?.goal || null,
@@ -522,12 +567,10 @@ function createDaemon({
     if (!activeTask) {
       activeTask = {
         id: `daemon-task-${Date.now()}`,
-        state: 'pending',
         createdAt: nowIso(),
       }
     }
-    // TODO(phase3.5-followup): activeTask.state currently mirrors taskSm state for log payload
-    // compatibility. Remove duplicate storage once downstream consumers read taskSm directly.
+    // activeTask remains metadata-only; runtime state authority is taskSm.
     const prev = taskSm.getState()
     const tx = taskSm.transition(state, {
       reason: extra.reason || null,
@@ -548,14 +591,13 @@ function createDaemon({
     }
     activeTask = {
       ...activeTask,
-      state: cur.state,
       updatedAt: nowIso(),
       ...extra,
     }
     await logger.log({
       type: 'daemon_task_state',
       taskId: activeTask.id,
-      state: activeTask.state,
+      state: cur.state,
       reason: extra.reason || null,
       error: extra.error || null,
     })
@@ -634,8 +676,9 @@ function createDaemon({
       })
       : noInterrupt({ source: 'system', reason: 'no_high_priority_window', metadata: { cycle: cycleCount } })
 
+    const queuedDecision = interruptQueue.peekHighest()
     const pendingDecisions = [
-      pendingDamageInterrupt,
+      queuedDecision,
       immediateDangerDecision,
       worldChangeDecision,
     ].filter((d) => d && d.shouldInterrupt)
@@ -662,9 +705,16 @@ function createDaemon({
       goal: activeTask?.goal || null,
       skillName: activeTask?.skillName || null,
     })
-    if (topDecision?.source === 'damage') pendingDamageInterrupt = null
+    const policy = taskSm.evaluateInterruptPolicy({
+      decision: topDecision,
+      currentSkillMeta,
+      currentExecutionMeta,
+      currentState: taskSm.getState().state,
+      runtimeMode: taskSm.getState().state === 'recovering' ? 'recovering' : 'normal',
+    })
+    if (topDecision?.source === 'damage' && policy.accept) interruptQueue.popHighest()
 
-    if (executionLocked() && !taskSm.shouldInterruptExecution(topDecision)) {
+    if (executionLocked() && !policy.accept) {
       await logger.log({
         type: 'interrupt_ignored',
         cycle: cycleCount,
@@ -674,6 +724,10 @@ function createDaemon({
         interruptReason: topDecision.interruptReason,
         matchedRuleId: topDecision?.metadata?.ruleId || null,
         reason: 'execution_lock_and_policy_reject',
+        policyReason: policy.policyReason,
+        currentExecutionSkill: currentExecutionMeta?.skillName || null,
+        currentExecutionInterruptible: currentExecutionMeta?.interruptible ?? null,
+        fallbackMode: topDecision?.fallbackMode || null,
         state: taskSm.getState().state,
         executionLock: true,
         goal: activeTask?.goal || null,
@@ -696,12 +750,38 @@ function createDaemon({
         }
       if (interrupt?.shouldInterrupt) {
         const reflexAction = reflexLayer.check(snapshot, ctx)
+        const reflexPolicy = taskSm.evaluateInterruptPolicy({
+          decision: interrupt,
+          currentSkillMeta,
+          currentExecutionMeta,
+          currentState: taskSm.getState().state,
+          runtimeMode: taskSm.getState().state === 'recovering' ? 'recovering' : 'normal',
+        })
+        if (executionLocked() && !reflexPolicy.accept) {
+          await logger.log({
+            type: 'interrupt_ignored',
+            cycle: cycleCount,
+            source: interrupt.source || 'reflex',
+            shouldInterrupt: interrupt.shouldInterrupt,
+            priority: interrupt.priority,
+            interruptReason: interrupt.interruptReason,
+            matchedRuleId: interrupt?.metadata?.ruleId || null,
+            reason: 'reflex_policy_reject',
+            policyReason: reflexPolicy.policyReason,
+            currentExecutionSkill: currentExecutionMeta?.skillName || null,
+            currentExecutionInterruptible: currentExecutionMeta?.interruptible ?? null,
+            currentTaskState: taskSm.getState().state,
+            fallbackMode: interrupt?.fallbackMode || null,
+          })
+          return { type: 'executing_hold', elapsedMs: Date.now() - cycleStart }
+        }
         const out = await executeInterruptTakeover({
           source: 'cycle',
           interrupt,
           reflexAction,
           snapshot,
           ctx,
+          policyReason: reflexPolicy.policyReason,
         })
         if (personality.isEnabled()) {
           try {
@@ -788,6 +868,10 @@ function createDaemon({
           goalHint: decision?.nextGoalHint || null,
         })
         const chainSignature = compactChainSignature(decision?.actionChain || [])
+        currentExecutionMeta = inferExecutionMetaFromChain(decision?.actionChain || [], stableSkills)
+        currentSkillMeta = currentExecutionMeta?.skillName
+          ? stableSkills.get(currentExecutionMeta.skillName) || null
+          : null
 
         // Apply memory updates from central LLM
         if (memory && Array.isArray(decision?.memoryUpdates)) {
@@ -925,6 +1009,8 @@ function createDaemon({
               chainSignature,
             })
           }
+          currentExecutionMeta = null
+          currentSkillMeta = null
         } else {
           taskSm.setExecutionLock(false, 'no_chain')
           await setTaskState('completed', {
@@ -932,12 +1018,16 @@ function createDaemon({
             cycle: cycleCount,
             goal: decision?.nextGoalHint || null,
           })
+          currentExecutionMeta = null
+          currentSkillMeta = null
         }
 
         return { type: 'reasoning', elapsedMs: Date.now() - cycleStart }
       } catch (err) {
         metrics.errorCount += 1
         taskSm.setExecutionLock(false, 'reasoning_error')
+        currentExecutionMeta = null
+        currentSkillMeta = null
         await setTaskState('failed', {
           reason: 'reasoning_error',
           error: err.message || String(err),
@@ -981,12 +1071,12 @@ function createDaemon({
       type: 'daemon_start', ts: nowIso(), thinkIntervalMs,
     })
 
-    // Real-time damage interrupt is represented as a structured decision (pendingDamageInterrupt).
+    // Real-time damage interrupt is represented as structured decisions in interruptQueue.
     healthListener = () => {
       if (bot.health < (bot._lastDaemonHealth ?? 20)) {
         lastDamageAt = Date.now()
         if (typeof reflexLayer?.noteDamage === 'function') reflexLayer.noteDamage()
-        pendingDamageInterrupt = systemInterrupt({
+        interruptQueue.enqueue(systemInterrupt({
           source: 'damage',
           priority: 'high',
           interruptReason: 'recent_damage_event',
@@ -994,7 +1084,7 @@ function createDaemon({
             cycle: cycleCount,
             health: bot.health,
           },
-        })
+        }))
       }
       bot._lastDaemonHealth = bot.health
     }
@@ -1060,13 +1150,39 @@ function createDaemon({
           health: bot.health,
           interruptPriority: interrupt.priority,
         })
-        await executeInterruptTakeover({
-          source: 'fast_ticker',
-          interrupt,
-          reflexAction,
-          snapshot,
-          ctx: { snapshot, cycle: cycleCount },
+        const fastPolicy = taskSm.evaluateInterruptPolicy({
+          decision: interrupt,
+          currentSkillMeta,
+          currentExecutionMeta,
+          currentState: taskSm.getState().state,
+          runtimeMode: 'reflex_safe',
         })
+        if (!executionLocked() || fastPolicy.accept) {
+          await executeInterruptTakeover({
+            source: 'fast_ticker',
+            interrupt,
+            reflexAction,
+            snapshot,
+            ctx: { snapshot, cycle: cycleCount },
+            policyReason: fastPolicy.policyReason,
+          })
+        } else {
+          await logger.log({
+            type: 'interrupt_ignored',
+            cycle: cycleCount,
+            source: interrupt.source || 'reflex',
+            shouldInterrupt: interrupt.shouldInterrupt,
+            priority: interrupt.priority,
+            interruptReason: interrupt.interruptReason,
+            matchedRuleId: interrupt?.metadata?.ruleId || null,
+            reason: 'fast_ticker_policy_reject',
+            policyReason: fastPolicy.policyReason,
+            currentExecutionSkill: currentExecutionMeta?.skillName || null,
+            currentExecutionInterruptible: currentExecutionMeta?.interruptible ?? null,
+            currentTaskState: taskSm.getState().state,
+            fallbackMode: interrupt?.fallbackMode || null,
+          })
+        }
       } catch {
         // fast reflex must never crash daemon
         taskSm.setExecutionLock(false, 'fast_reflex_error')
@@ -1077,12 +1193,37 @@ function createDaemon({
       try {
         // If damage was taken mid-execution, run an immediate reflex check
         // Skip if bot is actively digging (unless critical health)
-        if (pendingDamageInterrupt && reflexLayer && !executionLocked()
+        const queuedDamage = interruptQueue.peekHighest()
+        if (queuedDamage?.source === 'damage' && reflexLayer
             && (!bot.targetDigBlock || (bot.health ?? 20) <= 5)) {
           const emergencySnapshot = sense(bot, { radius: 5 })
-          const interrupt = pendingDamageInterrupt
-          pendingDamageInterrupt = null
+          const interrupt = interruptQueue.popHighest()
           const reflexAction = reflexLayer.check(emergencySnapshot, {})
+          const damagePolicy = taskSm.evaluateInterruptPolicy({
+            decision: interrupt,
+            currentSkillMeta,
+            currentExecutionMeta,
+            currentState: taskSm.getState().state,
+            runtimeMode: taskSm.getState().state === 'recovering' ? 'recovering' : 'normal',
+          })
+          if (executionLocked() && !damagePolicy.accept) {
+            await logger.log({
+              type: 'interrupt_ignored',
+              cycle: cycleCount,
+              source: interrupt?.source || 'damage',
+              shouldInterrupt: interrupt?.shouldInterrupt ?? true,
+              priority: interrupt?.priority || 'high',
+              interruptReason: interrupt?.interruptReason || 'damage_interrupt',
+              matchedRuleId: interrupt?.metadata?.ruleId || null,
+              reason: 'damage_policy_reject',
+              policyReason: damagePolicy.policyReason,
+              currentExecutionSkill: currentExecutionMeta?.skillName || null,
+              currentExecutionInterruptible: currentExecutionMeta?.interruptible ?? null,
+              currentTaskState: taskSm.getState().state,
+              fallbackMode: interrupt?.fallbackMode || null,
+            })
+            continue
+          }
           if (reflexAction) {
             await logger.log({
               type: 'daemon_damage_reflex', cycle: cycleCount,
@@ -1100,6 +1241,7 @@ function createDaemon({
             reflexAction,
             snapshot: emergencySnapshot,
             ctx: { snapshot: emergencySnapshot, cycle: cycleCount },
+            policyReason: damagePolicy.policyReason || 'damage_interrupt_path',
           })
           continue
         }
@@ -1177,12 +1319,17 @@ function createDaemon({
     return runCycle()
   }
 
+  function enqueueInterruptForTest(decision) {
+    return interruptQueue.enqueue(decision)
+  }
+
   return Object.freeze({
     start,
     stop,
     getTaskState,
     getStateTransitionTrace,
     runSingleCycleForTest,
+    enqueueInterruptForTest,
   })
 }
 

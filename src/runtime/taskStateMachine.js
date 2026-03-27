@@ -116,18 +116,64 @@ function createTaskStateMachine({
     return ['idle', 'assessing', 'planning', 'interrupted', 'recovering', 'completed', 'failed', 'cooling_down'].includes(state.current)
   }
 
-  function shouldInterruptExecution(decision = null) {
-    if (!state.executionLock) return false
-    if (!decision || decision.shouldInterrupt !== true) return false
-    const p = String(decision.priority || 'low')
-    if (p === 'fatal_immediate' || p === 'high') return true
-    if (p === 'medium') return true
-    if (p === 'low') {
-      const src = String(decision.source || '')
-      if (src === 'world_change' || src === 'system') return true
-      return false
+  function evaluateInterruptPolicy({
+    decision = null,
+    currentSkillMeta = null,
+    currentExecutionMeta = null,
+    currentState = null,
+    runtimeMode = 'normal',
+  } = {}) {
+    const effectiveState = currentState || state.current
+    if (!state.executionLock) {
+      return { accept: false, policyReason: 'execution_not_locked' }
     }
-    return false
+    if (!decision || decision.shouldInterrupt !== true) {
+      return { accept: false, policyReason: 'no_interrupt_decision' }
+    }
+
+    const priority = String(decision.priority || 'low')
+    const source = String(decision.source || 'system')
+    const fallbackMode = String(decision.fallbackMode || '')
+    const skillInterruptible = currentSkillMeta?.canInterrupt !== false
+    const executionInterruptible = currentExecutionMeta?.interruptible !== false
+    const isInterruptible = skillInterruptible && executionInterruptible
+
+    if (effectiveState === 'recovering' && priority !== 'fatal_immediate') {
+      return { accept: false, policyReason: 'recovering_mode_defers_non_fatal' }
+    }
+    if (runtimeMode === 'reflex_safe' && priority === 'low') {
+      return { accept: false, policyReason: 'reflex_safe_defers_low' }
+    }
+    if (priority === 'fatal_immediate') {
+      return { accept: true, policyReason: 'fatal_immediate_always_interrupts' }
+    }
+    if (priority === 'high') {
+      if (!isInterruptible) {
+        return { accept: false, policyReason: 'high_blocked_uninterruptible_execution' }
+      }
+      return { accept: true, policyReason: 'high_interrupt_allowed' }
+    }
+    if (priority === 'medium') {
+      if (!isInterruptible) return { accept: false, policyReason: 'medium_blocked_uninterruptible_execution' }
+      if (source === 'world_change' || source === 'damage' || fallbackMode === 'reflex_safe') {
+        return { accept: true, policyReason: 'medium_allowed_by_source_or_fallback' }
+      }
+      return { accept: false, policyReason: 'medium_deferred_by_policy' }
+    }
+    if (priority === 'low') {
+      if (source === 'world_change' && isInterruptible && runtimeMode !== 'normal') {
+        return { accept: true, policyReason: 'low_world_change_allowed_non_normal_mode' }
+      }
+      return { accept: false, policyReason: 'low_deferred_default' }
+    }
+    return { accept: false, policyReason: 'unknown_priority_deferred' }
+  }
+
+  function shouldInterruptExecution(input = null) {
+    if (input && typeof input === 'object' && Object.prototype.hasOwnProperty.call(input, 'decision')) {
+      return evaluateInterruptPolicy(input).accept
+    }
+    return evaluateInterruptPolicy({ decision: input }).accept
   }
 
   return Object.freeze({
@@ -137,6 +183,7 @@ function createTaskStateMachine({
     setExecutionLock,
     isExecutionLocked,
     canPlan,
+    evaluateInterruptPolicy,
     shouldInterruptExecution,
   })
 }

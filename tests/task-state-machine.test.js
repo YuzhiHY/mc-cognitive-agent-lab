@@ -64,6 +64,24 @@ async function run() {
   sm.transition('planning', { reason: 'x' })
   sm.transition('executing', { reason: 'x' })
   assert.strictEqual(sm.shouldInterruptExecution(noInterrupt({ source: 'system' })), false)
+  assert.strictEqual(sm.shouldInterruptExecution({
+    decision: systemInterrupt({ source: 'damage', priority: 'high', interruptReason: 'x' }),
+    currentExecutionMeta: { interruptible: false },
+    currentSkillMeta: { canInterrupt: false },
+    currentState: 'executing',
+  }), false)
+  assert.strictEqual(sm.shouldInterruptExecution({
+    decision: systemInterrupt({ source: 'world_change', priority: 'medium', interruptReason: 'x' }),
+    currentExecutionMeta: { interruptible: true },
+    currentSkillMeta: { canInterrupt: true },
+    currentState: 'executing',
+  }), true)
+  assert.strictEqual(sm.shouldInterruptExecution({
+    decision: systemInterrupt({ source: 'planner', priority: 'low', interruptReason: 'x' }),
+    currentExecutionMeta: { interruptible: true },
+    currentSkillMeta: { canInterrupt: true },
+    currentState: 'executing',
+  }), false)
   // eslint-disable-next-line no-console
   console.log('task state machine tests passed')
 }

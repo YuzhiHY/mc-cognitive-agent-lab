@@ -1,5 +1,9 @@
 const assert = require('node:assert')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 const { createDaemon } = require('../src/runtime/daemon')
+const { systemInterrupt } = require('../src/runtime/contracts/interruptDecision')
 
 function makeVec3(x = 0, y = 64, z = 0) {
   return {
@@ -204,12 +208,76 @@ async function testTransitionTraceHasStructuredFields() {
   assert.ok(Object.prototype.hasOwnProperty.call(t, 'cycle'))
 }
 
+async function testDamageInterruptUsesNormalizedPath() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-log-dmg-'))
+  process.env.LOG_TO_FILE = 'true'
+  process.env.LOG_DIR = dir
+  const bot = makeBot()
+  const daemon = createDaemon({
+    bot,
+    memory: makeMemory(),
+    centralReasoning: {
+      think: async () => ({ thought: 'x', actionChain: [], memoryUpdates: [] }),
+      setLastChainResult: () => {},
+      evaluateLearnProgress: async () => {},
+    },
+    chainExecutor: { run: async () => ({ completed: 0, total: 0, interrupted: false, failedStep: null, results: [] }) },
+    reflexLayer: {
+      arbitrate: () => ({ shouldInterrupt: false, source: 'reflex', priority: 'low', interruptReason: 'none' }),
+      check: () => ({ name: 'flee_burst', reason: 'danger', execute: async () => {} }),
+      execute: async () => ({ ok: true, status: 'success', actionType: 'flee_burst' }),
+      isCombatMode: () => false,
+    },
+  })
+  daemon.enqueueInterruptForTest(systemInterrupt({
+    source: 'damage',
+    priority: 'high',
+    interruptReason: 'damage_test_interrupt',
+  }))
+  await daemon.runSingleCycleForTest()
+  const logFile = path.join(dir, 'agent_daemon.jsonl')
+  const raw = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''
+  assert.ok(raw.includes('"type":"interrupt_decision"'))
+  assert.ok(raw.includes('"source":"damage"'))
+  assert.ok(raw.includes('damage_test_interrupt'))
+}
+
+async function testInterruptLogsIncludePolicyReason() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-log-'))
+  process.env.LOG_TO_FILE = 'true'
+  process.env.LOG_DIR = dir
+  const bot = makeBot()
+  const daemon = createDaemon({
+    bot,
+    memory: makeMemory(),
+    centralReasoning: {
+      think: async () => ({ thought: 'x', actionChain: [{ type: 'wait', timeoutMs: 5000 }], memoryUpdates: [] }),
+      setLastChainResult: () => {},
+      evaluateLearnProgress: async () => {},
+    },
+    chainExecutor: {
+      run: async () => new Promise(() => {}), // keep lock path
+    },
+    reflexLayer: { check: () => null, isCombatMode: () => false, arbitrate: () => ({ shouldInterrupt: false, source: 'reflex', priority: 'low', interruptReason: 'none' }) },
+  })
+  const first = daemon.runSingleCycleForTest()
+  await new Promise((r) => setTimeout(r, 10))
+  await daemon.runSingleCycleForTest()
+  daemon.stop()
+  const logFile = path.join(dir, 'agent_daemon.jsonl')
+  const raw = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''
+  assert.ok(raw.includes('policyReason'))
+  first.catch(() => {})
+}
+
 async function run() {
   await testNoReplanWhileExecuting()
   await testReflexInterruptStateTransitions()
   await testCompletionReallowsPlanning()
   await testFailureRoutesToRecoveryThenAssess()
   await testTransitionTraceHasStructuredFields()
+  await testDamageInterruptUsesNormalizedPath()
+  await testInterruptLogsIncludePolicyReason()
   // eslint-disable-next-line no-console
   console.log('daemon state integration tests passed')
 }
