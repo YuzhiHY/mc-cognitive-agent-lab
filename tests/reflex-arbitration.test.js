@@ -45,9 +45,10 @@ async function testInterruptShape() {
     status: { health: 20, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 1 })
-  assert.ok(Object.prototype.hasOwnProperty.call(out, 'shouldInterrupt'))
-  assert.ok(Object.prototype.hasOwnProperty.call(out, 'priority'))
-  assert.ok(Object.prototype.hasOwnProperty.call(out, 'interruptReason'))
+  assert.ok(out.decision, 'arbitrate must return { decision, matchedRule }')
+  assert.ok(Object.prototype.hasOwnProperty.call(out.decision, 'shouldInterrupt'))
+  assert.ok(Object.prototype.hasOwnProperty.call(out.decision, 'priority'))
+  assert.ok(Object.prototype.hasOwnProperty.call(out.decision, 'interruptReason'))
 }
 
 async function testFatalImmediateOnLava() {
@@ -60,8 +61,8 @@ async function testFatalImmediateOnLava() {
     status: { health: 14, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 2 })
-  assert.strictEqual(out.shouldInterrupt, true)
-  assert.strictEqual(out.priority, 'fatal_immediate')
+  assert.strictEqual(out.decision.shouldInterrupt, true)
+  assert.strictEqual(out.decision.priority, 'fatal_immediate')
 }
 
 async function testHighPriorityRecentDamageWindow() {
@@ -77,8 +78,8 @@ async function testHighPriorityRecentDamageWindow() {
     status: { health: 16, food: 20, recentDamageMs: 500 },
     inventory: { summary: [] },
   }, { cycle: 3 })
-  assert.strictEqual(out.shouldInterrupt, true)
-  assert.ok(['high', 'fatal_immediate', 'medium'].includes(out.priority))
+  assert.strictEqual(out.decision.shouldInterrupt, true)
+  assert.ok(['high', 'fatal_immediate', 'medium'].includes(out.decision.priority))
 }
 
 async function testUnsafeWaterScenario() {
@@ -93,8 +94,8 @@ async function testUnsafeWaterScenario() {
     status: { health: 12, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 4 })
-  assert.strictEqual(out.shouldInterrupt, true)
-  assert.ok(['high', 'fatal_immediate', 'medium'].includes(out.priority))
+  assert.strictEqual(out.decision.shouldInterrupt, true)
+  assert.ok(['high', 'fatal_immediate', 'medium'].includes(out.decision.priority))
 }
 
 async function testFireBurnScenario() {
@@ -108,8 +109,8 @@ async function testFireBurnScenario() {
     status: { health: 14, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 5 })
-  assert.strictEqual(out.shouldInterrupt, true)
-  assert.ok(['high', 'fatal_immediate'].includes(out.priority))
+  assert.strictEqual(out.decision.shouldInterrupt, true)
+  assert.ok(['high', 'fatal_immediate'].includes(out.decision.priority))
 }
 
 async function testFallingRiskScenario() {
@@ -124,8 +125,8 @@ async function testFallingRiskScenario() {
     status: { health: 20, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 6 })
-  assert.strictEqual(out.shouldInterrupt, true)
-  assert.strictEqual(out.priority, 'fatal_immediate')
+  assert.strictEqual(out.decision.shouldInterrupt, true)
+  assert.strictEqual(out.decision.priority, 'fatal_immediate')
 }
 
 async function testRepeatedStuckScenario() {
@@ -140,8 +141,8 @@ async function testRepeatedStuckScenario() {
     status: { health: 20, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 7 })
-  assert.strictEqual(out.shouldInterrupt, true)
-  assert.ok(['high', 'medium'].includes(out.priority))
+  assert.strictEqual(out.decision.shouldInterrupt, true)
+  assert.ok(['high', 'medium'].includes(out.decision.priority))
 }
 
 async function testDamageBurstScenario() {
@@ -156,8 +157,8 @@ async function testDamageBurstScenario() {
     status: { health: 12, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 8 })
-  assert.strictEqual(out.shouldInterrupt, true)
-  assert.ok(['high', 'fatal_immediate', 'medium'].includes(out.priority))
+  assert.strictEqual(out.decision.shouldInterrupt, true)
+  assert.ok(['high', 'fatal_immediate', 'medium'].includes(out.decision.priority))
 }
 
 async function run() {

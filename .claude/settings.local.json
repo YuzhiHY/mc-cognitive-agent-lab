@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/MCproject/AGENT/tests -type f -name *.js)",
+      "Bash(find /c/MCproject/AGENT -name *.test.js -type f)",
+      "Bash(ls -1 /c/MCproject/AGENT/src/runtime/skills/*.js)",
+      "Bash(grep -E \"\\\\.js$\")",
+      "Bash(grep -l \"getState\\\\|isExecutionLocked\\\\|canPlan\" /c/MCproject/AGENT/src/runtime/*.js)",
+      "Bash(npm test:*)"
+    ]
+  }
+}

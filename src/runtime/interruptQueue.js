@@ -8,11 +8,13 @@ function rankPriority(priority) {
 
 function createInterruptQueue() {
   const queue = []
+  let _nextId = 1
 
   function enqueue(decision) {
     if (!decision || decision.shouldInterrupt !== true) return false
     queue.push({
       ...decision,
+      _id: _nextId++,
       _enqueuedAt: Date.now(),
     })
     return true
@@ -28,7 +30,7 @@ function createInterruptQueue() {
   function popHighest() {
     const top = peekHighest()
     if (!top) return null
-    const idx = queue.findIndex((x) => x === top || (x._enqueuedAt === top._enqueuedAt && x.interruptReason === top.interruptReason))
+    const idx = queue.findIndex((x) => x._id === top._id)
     if (idx >= 0) queue.splice(idx, 1)
     return top
   }

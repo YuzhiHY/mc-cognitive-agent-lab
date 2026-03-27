@@ -1,0 +1,85 @@
+{
+  "voice": "玩家把我传送过来了，周围挺安全的，我正好可以四处看看有什么新发现！",
+  "emotionalTags": [
+    "calm",
+    "curious"
+  ],
+  "recentEvents": [
+    {
+      "type": "consult",
+      "summary": "",
+      "voice": "天气设好了，工具也磨得锋利，随时可以出发探索！",
+      "ts": "2026-03-27T21:16:09.783Z"
+    },
+    {
+      "type": "consult",
+      "summary": "",
+      "voice": "玩家刚设好天气，我工具也准备好了，接下来想做什么？",
+      "ts": "2026-03-27T21:16:19.659Z"
+    },
+    {
+      "type": "consult",
+      "summary": "玩家Rinllo_对你说了：\"Set the time to 1000]\"",
+      "voice": "好的，我这就把时间设为1000，这样白天更长，我们可以多探索一会儿！",
+      "ts": "2026-03-27T21:16:25.341Z"
+    },
+    {
+      "type": "consult",
+      "summary": "玩家Rinllo_对你说了：\"你先出来\"",
+      "voice": "玩家让我出来？好的，我这就从屋里出来，看看有什么指示！",
+      "ts": "2026-03-27T21:16:31.662Z"
+    },
+    {
+      "type": "consult",
+      "summary": "玩家Rinllo_对你说了：\"到我这里来\"",
+      "voice": "玩家Rinllo_叫我过去，我这就来！看看有什么新计划。",
+      "ts": "2026-03-27T21:16:34.837Z"
+    },
+    {
+      "type": "consult",
+      "summary": "",
+      "voice": "我出来了，工具都带好了，随时可以行动！",
+      "ts": "2026-03-27T21:16:41.103Z"
+    },
+    {
+      "type": "consult",
+      "summary": "",
+      "voice": "玩家让我出来并过去，我这就跟上，看看有什么新任务！",
+      "ts": "2026-03-27T21:16:51.680Z"
+    },
+    {
+      "type": "consult",
+      "summary": "玩家Rinllo_对你说了：\"Teleported AgentBot to Rinllo_]\"",
+      "voice": "玩家把我传送过来了？哈哈，这挺方便的，我看看周围有什么新东西可以探索！",
+      "ts": "2026-03-27T21:17:04.056Z"
+    },
+    {
+      "type": "consult",
+      "summary": "",
+      "voice": "玩家把我传送过来了，周围看起来挺安全的，我正好可以四处看看有什么新发现！",
+      "ts": "2026-03-27T21:17:14.090Z"
+    },
+    {
+      "type": "consult",
+      "summary": "",
+      "voice": "玩家把我传送过来了，周围挺安全的，我正好可以四处看看有什么新发现！",
+      "ts": "2026-03-27T21:17:25.230Z"
+    }
+  ],
+  "lastUpdated": "2026-03-27T21:18:00.079Z",
+  "personaProfile": {
+    "values": [
+      "cooperative",
+      "cautious",
+      "resourceful"
+    ],
+    "strategyBias": {
+      "ask_player_first": 0.58,
+      "avoid_night_surface": 0.6,
+      "keep_tools_ready": 0.55
+    },
+    "stabilityScore": 0.945,
+    "lastReinforcedAt": "2026-03-27T21:18:00.079Z",
+    "recentPreferenceHints": []
+  }
+}

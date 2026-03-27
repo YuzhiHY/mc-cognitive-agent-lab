@@ -214,8 +214,8 @@
       "avoid_night_surface": 0.6,
       "keep_tools_ready": 0.55
     },
-    "stabilityScore": 0.3149999999999997,
-    "lastReinforcedAt": "2026-03-27T03:54:28.903Z",
+    "stabilityScore": 0.945,
+    "lastReinforcedAt": "2026-03-27T21:18:00.079Z",
     "recentPreferenceHints": []
   }
 }

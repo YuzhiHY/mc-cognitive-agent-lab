@@ -1,4 +1,3 @@
-const { sense } = require('./sense')
 const { clearObstacleInFront } = require('./obstacleNav')
 const { runSkillInSandbox, serializeError, withTimeout } = require('./sandbox')
 const {
@@ -160,6 +159,10 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
           await navigateWithObstacleClear(bot, api, target, { sprint: step.sprint || false, timeoutMs })
           return okOut({ type: 'navigate', arrived: true }, 'arrived')
         } catch (err) {
+          const msg = String(err?.message || err || '').toLowerCase()
+          if (/path|stuck|timeout|no path|goal|movement/i.test(msg)) {
+            try { ctx?.reportStuck?.('navigate_failed') } catch { /* */ }
+          }
           return failOut(err, 'navigate_failed')
         }
       }
@@ -216,13 +219,24 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
               const timeoutMs = adaptiveTimeoutMs({ type: 'navigate' }, ctx, bot, {
                 x: block.position.x, y: block.position.y, z: block.position.z,
               })
-              await navigateWithObstacleClear(bot, api, {
-                x: block.position.x,
-                y: block.position.y,
-                z: block.position.z,
-              }, { sprint: false, timeoutMs })
+              try {
+                await navigateWithObstacleClear(bot, api, {
+                  x: block.position.x,
+                  y: block.position.y,
+                  z: block.position.z,
+                }, { sprint: false, timeoutMs })
+              } catch (e) {
+                const msg = String(e?.message || e || '').toLowerCase()
+                if (/path|stuck|timeout|no path|goal|movement/i.test(msg)) {
+                  try { ctx?.reportStuck?.('dig_nav_failed') } catch { /* */ }
+                }
+                return failOut(e, 'dig_navigate_failed')
+              }
             }
           }
+          try {
+            await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true)
+          } catch { /* */ }
           await withTimeout(
             bot.dig(block, 'raycast', 'raycast'),
             step.timeoutMs || adaptiveTimeoutMs(step, ctx, bot, block.position),
@@ -516,51 +530,42 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
     return { ok: true }
   }
 
-  async function run({ chain, api, bot, ctx, reflexLayer, logger, cycle }) {
+  async function run({ chain, api, bot, ctx, reflexLayer, logger, cycle, runControl }) {
     const total = chain.length
     let completed = 0
     let interrupted = false
     let failedStep = null
     const results = []
     const state = { confirmedPlaced: {} }
+    const signal = runControl?.signal
 
     for (let i = 0; i < chain.length; i++) {
       const step = chain[i]
 
-      // Mid-chain reflex check: sense between steps
-      if (i > 0 && reflexLayer) {
-        const midSnapshot = sense(bot, { radius: 5 })
-        const reflexAction = reflexLayer.check(midSnapshot, ctx)
-        if (reflexAction) {
-          if (logger) {
-            await logger.log({
-              type: 'chain_reflex_interrupt', cycle,
-              step: i, action: reflexAction.name, reason: reflexAction.reason,
-            })
-          }
-          try {
-            if (typeof reflexLayer.execute === 'function') {
-              await reflexLayer.execute(reflexAction, { api, bot, ctx })
-            } else {
-              await reflexAction.execute({ api, bot, ctx })
-            }
-          } catch { /* reflex must not crash chain */ }
-          interrupted = true
-          results.push({
-            step: i,
-            type: 'reflex_interrupt',
-            ...interruptedResult({
-              source: 'chain',
-              actionType: 'reflex_interrupt',
-              startedAt: Date.now(),
-              endedAt: Date.now(),
-              interruptReason: reflexAction.reason || reflexAction.name || 'reflex_interrupt',
-              details: { action: reflexAction.name || 'unknown' },
-            }),
+      if (signal?.aborted) {
+        interrupted = true
+        const ir = interruptedResult({
+          source: 'chain',
+          actionType: 'external_abort',
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+          interruptReason: signal.reason || 'chain_aborted',
+          details: { stepIndex: i, abortedAt: signal.at },
+        })
+        results.push({ step: i, type: 'external_abort', ...ir })
+        if (logger) {
+          await logger.log({
+            type: 'chain_aborted',
+            cycle,
+            stepIndex: i,
+            reason: signal.reason || 'aborted',
+            total,
           })
-          break
         }
+        break
       }
+
+      // Reflex / interrupts are owned by daemon + taskStateMachine; do not execute reflex here.
 
       if (logger) {
         await logger.log({
@@ -572,7 +577,16 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
       const policy = validateStepPolicy(step)
       if (!policy.ok) {
         failedStep = { index: i, type: step.type, error: { message: policy.message } }
-        results.push({ step: i, type: step.type, ok: false, error: { message: policy.message } })
+        const ir = invalidResult({
+          source: 'chain',
+          actionType: step.type,
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+          reason: 'step_policy_rejected',
+          errorMessage: policy.message,
+          details: { stepIndex: i },
+        })
+        results.push({ step: i, type: step.type, ...ir })
         if (logger) {
           await logger.log({
             type: 'chain_step_rejected',
@@ -587,6 +601,30 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
 
       const stepResult = await executeStep(step, { api, bot, ctx, state })
       results.push({ step: i, type: step.type, ...stepResult })
+
+      if (signal?.aborted) {
+        interrupted = true
+        const ir = interruptedResult({
+          source: 'chain',
+          actionType: 'external_abort',
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+          interruptReason: signal.reason || 'chain_aborted_after_step',
+          details: { stepIndex: i + 1, abortedAt: signal.at },
+        })
+        results.push({ step: i + 1, type: 'external_abort', ...ir })
+        if (logger) {
+          await logger.log({
+            type: 'chain_aborted',
+            cycle,
+            stepIndex: i + 1,
+            reason: signal.reason || 'aborted',
+            afterStep: i,
+            total,
+          })
+        }
+        break
+      }
 
       if (logger) {
         await logger.log({

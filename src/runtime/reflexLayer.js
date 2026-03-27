@@ -48,7 +48,8 @@ function columnBlockedAt(bot, floored, fx, fz) {
 }
 
 /** No pathfinder / api.navigateTo — immediate sprint in clearest away direction */
-async function pureFleeBurst(bot, awayDx, awayDz, ms = 900) {
+async function pureFleeBurst(bot, awayDx, awayDz, ms = 900, opts = {}) {
+  const useJump = opts.jump !== false
   const pos = bot.entity?.position
   const floored = pos?.floored()
   if (!pos || !floored) return
@@ -67,7 +68,7 @@ async function pureFleeBurst(bot, awayDx, awayDz, ms = 900) {
     await bot.look(yaw, bot.entity.pitch, true)
     bot.setControlState('sprint', true)
     bot.setControlState('forward', true)
-    bot.setControlState('jump', true)
+    if (useJump) bot.setControlState('jump', true)
     await sleep(ms)
     bot.setControlState('forward', false)
     bot.setControlState('sprint', false)
@@ -78,8 +79,8 @@ async function pureFleeBurst(bot, awayDx, awayDz, ms = 900) {
   await bot.look(yaw, bot.entity.pitch, true)
   bot.setControlState('sprint', true)
   bot.setControlState('forward', true)
-  bot.setControlState('jump', true)
-  await sleep(Math.floor(ms * 0.65))
+  if (useJump) bot.setControlState('jump', true)
+  await sleep(Math.floor(ms * (useJump ? 0.65 : 0.85)))
   bot.setControlState('forward', false)
   bot.setControlState('sprint', false)
   bot.setControlState('jump', false)
@@ -260,7 +261,16 @@ function createReflexLayer(bot) {
       condition: (snapshot) => {
         const onGround = bot?.entity?.onGround
         const vy = Number(bot?.entity?.velocity?.y ?? 0)
-        return onGround === false && vy < -0.9
+        if (onGround === false && vy < -0.25) return true
+        const pos = bot?.entity?.position?.floored()
+        if (pos && onGround === true) {
+          const below = bot.blockAt(pos.offset(0, -1, 0))
+          const below2 = bot.blockAt(pos.offset(0, -2, 0))
+          const air1 = below && below.name === 'air'
+          const air2 = below2 && below2.name === 'air'
+          if (air1 && air2 && vy <= 0.08) return true
+        }
+        return false
       },
       reason: 'Falling risk detected',
       execute: async ({ bot: b }) => {
@@ -333,6 +343,31 @@ function createReflexLayer(bot) {
       },
     },
     {
+      id: 'recent_damage_snapshot_flee',
+      name: 'flee_burst',
+      priority: 143,
+      condition: (snapshot) => {
+        const ms = Number(snapshot?.status?.recentDamageMs ?? -1)
+        if (ms < 0 || ms >= 3200) return false
+        const threat = String(snapshot?.threat_level || '')
+        if (threat === 'high' || threat === 'low') return true
+        return snapshot?.close_threat === true || beingAttacked === true
+      },
+      reason: 'Recent damage window — flee burst',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2400)
+        const v = vectorFromNearestHostile(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 780)
+        else {
+          b.setControlState('sprint', true)
+          b.setControlState('forward', true)
+          await sleep(520)
+          b.setControlState('forward', false)
+          b.setControlState('sprint', false)
+        }
+      },
+    },
+    {
       id: 'recent_damage_burst',
       name: 'flee_burst',
       priority: 194,
@@ -359,17 +394,47 @@ function createReflexLayer(bot) {
     },
     {
       id: 'repeated_stuck_recovery',
-      name: 'emergency_jump',
-      priority: 130,
-      condition: () => recentStuckCount >= 2 && Date.now() - lastStuckAt <= 4500,
+      name: 'flee_burst',
+      priority: 132,
+      condition: () => recentStuckCount >= 2 && Date.now() - lastStuckAt <= 9000,
       reason: 'Repeated stuck state',
       execute: async ({ bot: b }) => {
-        b.setControlState('jump', true)
-        b.setControlState('forward', true)
-        await sleep(450)
-        b.setControlState('jump', false)
-        b.setControlState('forward', false)
-        recentStuckCount = 0
+        enterCombatMode(2200)
+        const yaw = Math.random() * Math.PI * 2
+        await pureFleeBurst(b, Math.sin(yaw), Math.cos(yaw), 820, { jump: true })
+        recentStuckCount = Math.max(0, recentStuckCount - 1)
+      },
+    },
+    {
+      id: 'movement_stuck_escalate',
+      name: 'flee_burst',
+      priority: 137,
+      condition: () => recentStuckCount >= 3 && Date.now() - lastStuckAt <= 14000,
+      reason: 'Repeated stuck state — detour burst',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2600)
+        const yaw = Math.random() * Math.PI * 2
+        await pureFleeBurst(b, Math.sin(yaw), Math.cos(yaw), 950, { jump: true })
+        recentStuckCount = Math.max(0, recentStuckCount - 2)
+      },
+    },
+    {
+      id: 'hostile_injured_melee_flee',
+      name: 'flee_burst',
+      priority: 199,
+      condition: (snapshot) => {
+        const hp = snapshot?.status?.health ?? 20
+        if (hp > 14) return false
+        const v = vectorFromNearestHostile(bot)
+        return v && v.dist <= 7
+      },
+      reason: 'Hostile nearby while injured — sprint away (flat flee)',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(3200)
+        const v = vectorFromNearestHostile(b)
+        const noJump = (b.health ?? 20) <= 11
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 1150, { jump: !noJump })
+        resetAttackFlag()
       },
     },
     {
@@ -382,9 +447,10 @@ function createReflexLayer(bot) {
       },
       reason: 'Hostile in melee range — burst escape',
       execute: async ({ bot: b }) => {
-        enterCombatMode(2200)
+        enterCombatMode(2600)
         const v = vectorFromNearestHostile(b)
-        if (v) await pureFleeBurst(b, v.dx, v.dz, 850)
+        const low = (b.health ?? 20) <= 12
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 1050, { jump: !low })
         resetAttackFlag()
       },
     },
@@ -443,11 +509,12 @@ function createReflexLayer(bot) {
       priority: 110,
       condition: (snapshot) => {
         const threat = snapshot.threat_level
+        const health = snapshot.status?.health ?? 20
+        if (health < 12) return false
         const closeHostiles = nearbyHostiles(bot, 2.8).length
         if (closeHostiles > 0) return true
         if (threat !== 'high' && threat !== 'low') return false
         if (!beingAttacked && threat !== 'high') return false
-        const health = snapshot.status?.health ?? 20
         if (health <= 5) return false
         return hasWeaponInInventory(snapshot.inventory)
       },
@@ -574,7 +641,8 @@ function createReflexLayer(bot) {
 
   function arbitrate(snapshot, ctx) {
     const rule = check(snapshot, ctx)
-    return buildInterrupt(rule, snapshot, ctx)
+    const decision = buildInterrupt(rule, snapshot, ctx)
+    return { decision, matchedRule: rule }
   }
 
   function check(snapshot, ctx) {
@@ -590,6 +658,26 @@ function createReflexLayer(bot) {
 
     if (triggered.length === 0) return null
     return triggered[0]
+  }
+
+  function getDamageFallbackAction() {
+    return {
+      id: 'damage_fallback_flee',
+      name: 'flee_burst',
+      reason: 'Damage interrupt fallback — flee burst',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2600)
+        const v = vectorFromNearestHostile(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 720)
+        else {
+          b.setControlState('sprint', true)
+          b.setControlState('forward', true)
+          await sleep(580)
+          b.setControlState('forward', false)
+          b.setControlState('sprint', false)
+        }
+      },
+    }
   }
 
   async function execute(rule, { api, bot: b, ctx } = {}) {
@@ -631,6 +719,7 @@ function createReflexLayer(bot) {
     arbitrate,
     check,
     execute,
+    getDamageFallbackAction,
     rules,
     isBeingAttacked: () => beingAttacked,
     isCombatMode,

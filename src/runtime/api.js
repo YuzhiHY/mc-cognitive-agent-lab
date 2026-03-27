@@ -1,3 +1,4 @@
+const { Vec3 } = require('vec3')
 const { clearObstacleInFront } = require('./obstacleNav')
 const { createStableSkillOps } = require('./skills/stableSkillOps')
 const {
@@ -85,11 +86,72 @@ function createApi(bot) {
       const mcData = require('minecraft-data')(bot.version)
       const blockType = mcData.blocksByName[blockName]
       if (!blockType) throw new Error(`api.digByName: unknown block '${blockName}'`)
-      const found = bot.findBlock({ matching: blockType.id, maxDistance })
+      let found = bot.findBlock({ matching: blockType.id, maxDistance })
       if (!found) throw new Error(`api.digByName: no '${blockName}' found within ${maxDistance}`)
       const origin = bot.entity?.position
-      if (navigate && origin && found.position && origin.distanceTo(found.position) > 4.5) {
+      if (navigate && origin && found.position && origin.distanceTo(found.position) > 4.2) {
         await api.navigateTo({ x: found.position.x, y: found.position.y, z: found.position.z }, { sprint: false, timeoutMs: 12_000 })
+        found = bot.findBlock({ matching: blockType.id, maxDistance }) || found
+      }
+      const center = found.position.offset(0.5, 0.5, 0.5)
+      const canSee = typeof bot.canSeeBlock === 'function'
+        ? () => bot.canSeeBlock(found)
+        : () => true
+      const lookTargets = [
+        new Vec3(0.5, 0.5, 0.5),
+        new Vec3(0.5, 0.2, 0.5),
+        new Vec3(0.5, 0.85, 0.5),
+        new Vec3(0.25, 0.5, 0.25),
+        new Vec3(0.75, 0.5, 0.75),
+        new Vec3(0.5, 0.5, 0.15),
+        new Vec3(0.5, 0.5, 0.85),
+      ]
+      for (let attempt = 0; attempt < lookTargets.length; attempt++) {
+        const o = lookTargets[attempt]
+        try {
+          await bot.lookAt(found.position.offset(o.x, o.y, o.z), true)
+        } catch { /* ignore look errors */ }
+        await sleep(attempt === 0 ? 45 : 95)
+        if (canSee()) break
+      }
+      if (!canSee() && navigate && origin && found.position) {
+        const d = origin.distanceTo(found.position)
+        if (d > 1.85 && d < 8) {
+          try {
+            await api.navigateTo({ x: found.position.x, y: found.position.y, z: found.position.z }, { sprint: false, timeoutMs: 10_000 })
+          } catch { /* */ }
+          found = bot.findBlock({ matching: blockType.id, maxDistance }) || found
+          try {
+            await bot.lookAt(found.position.offset(0.5, 0.5, 0.5), true)
+          } catch { /* */ }
+          await sleep(120)
+        }
+      }
+      if (!canSee() && origin && found.position) {
+        const eye = origin.offset(0, bot.entity.eyeHeight, 0)
+        const c = found.position.offset(0.5, 0.5, 0.5)
+        const dx = c.x - eye.x
+        const dz = c.z - eye.z
+        const yaw = Math.atan2(-dx, -dz)
+        try {
+          await bot.look(yaw, 0.28, true)
+          bot.setControlState('forward', true)
+          await sleep(200)
+          bot.setControlState('forward', false)
+          await sleep(100)
+        } catch { /* */ }
+        found = bot.findBlock({ matching: blockType.id, maxDistance }) || found
+        for (let a = 0; a < 4; a++) {
+          const o = lookTargets[Math.min(a, lookTargets.length - 1)]
+          try {
+            await bot.lookAt(found.position.offset(o.x, o.y, o.z), true)
+          } catch { /* */ }
+          await sleep(85)
+          if (canSee()) break
+        }
+      }
+      if (!canSee()) {
+        throw new Error(`api.digByName: block not in view after alignment (${blockName})`)
       }
       await bot.dig(found, 'raycast', 'raycast')
       return { dug: blockName, pos: { x: found.position.x, y: found.position.y, z: found.position.z } }

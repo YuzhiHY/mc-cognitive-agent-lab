@@ -1,4 +1,5 @@
 const { chooseHardcodedSkill } = require('./skillSelector')
+const { buildIntentAwareChain, shouldSuppressAutoWood } = require('./intentFallback')
 
 function norm(v) {
   return String(v || '').trim().toLowerCase()
@@ -81,6 +82,7 @@ function compileActionChain({
   actionChain,
   goal,
   snapshot,
+  planningContext = null,
 }) {
   let chain = sanitizeChain(actionChain)
   chain = compactPairToStableSkills(chain)
@@ -96,8 +98,32 @@ function compileActionChain({
   }
 
   if (chain.length === 0) {
-    const selected = chooseHardcodedSkill({ goal: goal || '', snapshot: snapshot || null })
-    if (selected?.name) chain = [{ type: 'skill_ref', name: selected.name, args: selected.args || {} }]
+    const g = planningContext?.goalText || goal || ''
+    const pTexts = planningContext?.playerTexts || []
+    if (planningContext?.explicitUserIntent) {
+      const intent = buildIntentAwareChain({ goalText: g, playerTexts: pTexts, snapshot })
+      if (intent.length > 0) {
+        chain = intent
+      } else {
+        const selected = chooseHardcodedSkill({
+          goal: `${g} ${pTexts.join(' ')}`.trim(),
+          snapshot: snapshot || null,
+          options: { suppressWoodGather: shouldSuppressAutoWood(g, pTexts) },
+        })
+        if (selected?.name) {
+          chain = [{ type: 'skill_ref', name: selected.name, args: selected.args || {} }]
+        } else {
+          chain = [{ type: 'skill_ref', name: 'recover_from_stuck', args: {} }]
+        }
+      }
+    } else {
+      const selected = chooseHardcodedSkill({
+        goal: goal || '',
+        snapshot: snapshot || null,
+        options: { suppressWoodGather: false },
+      })
+      if (selected?.name) chain = [{ type: 'skill_ref', name: selected.name, args: selected.args || {} }]
+    }
   }
 
   return chain

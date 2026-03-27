@@ -44,6 +44,11 @@ The current system is **partially structured**, but still relies significantly o
 - Reflex/interrupt arbitration now uses explicit priority levels and structured interrupt outputs before planner execution.
 - Interrupt decisions are normalized via a shared contract (`interruptDecision`) and logged as decision/applied/ignored events.
 - Damage-origin interrupts are converging into the same interrupt queue/arbitration path.
+- **Chain execution** supports cooperative **abort** via `chainRunControl`: accepted reflex/damage takeovers abort the in-flight action chain (no mid-chain parallel reflex execution in `chainExecutor`; daemon owns reflex).
+- **Reflex takeover** uses **in-flight guard** + **rule-level cooldown** (`REFLEX_TAKEOVER_COOLDOWN_MS`) so the fast ticker and normal cycle do not spam the same rule.
+- **Planner fallbacks** respect **explicit user intent** (`runtimeDirectives` / player messages): auto `gather_wood_fast` is suppressed when the user has a non-generic primary goal.
+- **Dig-by-name** aligns view with `lookAt` + `canSeeBlock` (and a short re-approach) before `dig`, reducing “block not in view” failures.
+- **Stuck motion** during `executing` can abort the chain via a light stuck-watch (calls `noteStuck` + `chainRunControl.abort`).
 - LLM-generated skills are still supported via sandbox and remain part of the system for controlled synthesis.
 - Stable skills and generated skills now coexist; generated code is no longer the only behavior route.
 
@@ -103,11 +108,14 @@ The current system is **partially structured**, but still relies significantly o
 
 The system is **not yet fully stabilized** and still exhibits:
 
-- heavy reliance on LLM-generated code
-- incomplete separation between planning and execution
-- daemon acting as a central control hub (high coupling)
-- skill system not yet dominant over code generation
-- limited long-run stability guarantees
+- Long `navigate` / `dig` steps do not yet poll abort **inside** the step (abort applies between steps and clears pathfinder on reflex takeover).
+- Mid-step reflex vs body control can still race for a short window until the current primitive finishes.
+- Stuck detection is movement-based only (no full physics solver); narrow terrain may still need manual intervention.
+- Chat from the **chat listener** (player whisper path) is not fully synchronized with the committed central plan (main-loop voice is gated to post-decision chains).
+- Personality and execution can still diverge on edge cases (partial mitigation: skip voice on obvious fast-fallback gather / defer paths).
+- heavy reliance on LLM-generated code for novel goals
+- daemon remains a central control hub (modular, but high coordination surface)
+- limited long-run stability guarantees on hostile servers
 
 ---
 
@@ -243,13 +251,13 @@ This project is in an **early-to-mid prototype stage**:
 
 Next steps focus on:
 
-- reducing reliance on code generation
-- strengthening skill-based execution
-- introducing execution locks and task state machines
-- formalizing perception layers
-- improving failure recovery
-- building a reliable skill promotion pipeline
-- improving observability and debugging
+- **Phase 5+ perception**: tiered snapshots for planner vs reflex vs memory (see `docs/perception-phase5-prep.md`).
+- **Mid-step cancellation**: plumb `runControl` / abort into `navigateTo` / long dig loops where safe.
+- **Stronger stuck recovery**: integrate recovery skills with explicit state machine transitions after abort.
+- **Chat–plan coupling**: queue player commands as first-class goals and align personality chat with locked goals.
+- reducing reliance on code generation for stable survival loops
+- building a reliable skill promotion pipeline and replay gates
+- improving observability (structured metrics beyond JSONL)
 
 ---
 

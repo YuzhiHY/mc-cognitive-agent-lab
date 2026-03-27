@@ -1,0 +1,11 @@
+{
+  "skillName": "learned_chain_auto_1774640431538",
+  "thought": "fast_fallback: acknowledge player and keep moving",
+  "intent": "fast_fallback_ack",
+  "tags": [
+    "auto_promoted",
+    "daemon",
+    "chain_synthesized"
+  ],
+  "updatedAt": "2026-03-27T19:40:31.539Z"
+}

@@ -1,0 +1,11 @@
+{
+  "skillName": "learned_chain_auto_1774642391077",
+  "thought": "fast_fallback: dig nearby dirt",
+  "intent": "safe_progress_dig",
+  "tags": [
+    "auto_promoted",
+    "daemon",
+    "chain_synthesized"
+  ],
+  "updatedAt": "2026-03-27T20:13:11.079Z"
+}

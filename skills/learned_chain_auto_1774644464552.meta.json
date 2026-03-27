@@ -1,0 +1,11 @@
+{
+  "skillName": "learned_chain_auto_1774644464552",
+  "thought": "fast_fallback: explicit user intent — defer auto wood gather",
+  "intent": "defer_auto_gather",
+  "tags": [
+    "auto_promoted",
+    "daemon",
+    "chain_synthesized"
+  ],
+  "updatedAt": "2026-03-27T20:47:44.553Z"
+}

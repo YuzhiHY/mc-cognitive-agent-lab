@@ -151,11 +151,15 @@
   },
   "learned:auto:nav:nearest_dirt -> dig:dirt": {
     "signature": "nav:nearest_dirt -> dig:dirt",
-    "successCount": 0,
-    "failCount": 2,
-    "promoted": false,
+    "successCount": 5,
+    "failCount": 10,
+    "promoted": true,
     "firstSeenAt": "2026-03-27T01:53:11.109Z",
-    "lastSeenAt": "2026-03-27T01:54:11.342Z"
+    "lastSeenAt": "2026-03-27T20:51:59.668Z",
+    "pendingVerification": false,
+    "pendingSince": "2026-03-27T19:59:04.871Z",
+    "promotedType": "synthesized_skill_file",
+    "promotedSkillName": "learned_chain_auto_1774642391077"
   },
   "skill:learned_chain_auto_1774576546788": {
     "skillName": "learned_chain_auto_1774576546788",
@@ -188,5 +192,73 @@
     "signature": "nav:nearest_oak_log -> dig:oak_log",
     "successCount": 4,
     "promotedAt": "2026-03-27T02:59:02.393Z"
+  },
+  "learned:auto:skill_ref -> skill_ref": {
+    "signature": "skill_ref -> skill_ref",
+    "successCount": 25,
+    "failCount": 24,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T06:28:55.387Z",
+    "lastSeenAt": "2026-03-27T21:18:00.073Z",
+    "pendingVerification": true,
+    "pendingSince": "2026-03-27T06:29:22.738Z"
+  },
+  "learned:auto:chat -> wait": {
+    "signature": "chat -> wait",
+    "successCount": 22,
+    "failCount": 1,
+    "promoted": true,
+    "firstSeenAt": "2026-03-27T06:30:58.376Z",
+    "lastSeenAt": "2026-03-27T20:48:57.367Z",
+    "pendingVerification": false,
+    "pendingSince": "2026-03-27T19:38:55.825Z",
+    "promotedType": "synthesized_skill_file",
+    "promotedSkillName": "learned_chain_auto_1774640431538"
+  },
+  "skill:learned_chain_auto_1774640431538": {
+    "skillName": "learned_chain_auto_1774640431538",
+    "filePath": "C:\\MCproject\\AGENT\\skills\\learned_chain_auto_1774640431538.js",
+    "source": "auto_promoted",
+    "signature": "chat -> wait",
+    "successCount": 4,
+    "promotedAt": "2026-03-27T19:40:31.539Z"
+  },
+  "skill:learned_chain_auto_1774642391077": {
+    "skillName": "learned_chain_auto_1774642391077",
+    "filePath": "C:\\MCproject\\AGENT\\skills\\learned_chain_auto_1774642391077.js",
+    "source": "auto_promoted",
+    "signature": "nav:nearest_dirt -> dig:dirt",
+    "successCount": 4,
+    "promotedAt": "2026-03-27T20:13:11.079Z"
+  },
+  "learned:auto:wait": {
+    "signature": "wait",
+    "successCount": 38,
+    "failCount": 0,
+    "promoted": true,
+    "firstSeenAt": "2026-03-27T20:47:12.851Z",
+    "lastSeenAt": "2026-03-27T20:55:06.992Z",
+    "pendingVerification": false,
+    "pendingSince": "2026-03-27T20:47:33.825Z",
+    "promotedType": "synthesized_skill_file",
+    "promotedSkillName": "learned_chain_auto_1774644464552"
+  },
+  "skill:learned_chain_auto_1774644464552": {
+    "skillName": "learned_chain_auto_1774644464552",
+    "filePath": "C:\\MCproject\\AGENT\\skills\\learned_chain_auto_1774644464552.js",
+    "source": "auto_promoted",
+    "signature": "wait",
+    "successCount": 4,
+    "promotedAt": "2026-03-27T20:47:44.554Z"
+  },
+  "learned:auto:skill_ref": {
+    "signature": "skill_ref",
+    "successCount": 15,
+    "failCount": 16,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T21:11:41.117Z",
+    "lastSeenAt": "2026-03-27T21:17:18.646Z",
+    "pendingVerification": true,
+    "pendingSince": "2026-03-27T21:14:58.642Z"
   }
 }

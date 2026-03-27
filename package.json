@@ -8,7 +8,7 @@
     "daemon": "node src/index.js --daemon",
     "live-selftest": "node src/index.js --live-selftest",
     "dev": "node src/index.js",
-    "test": "node tests/hardening.test.js && node tests/execution-result-normalization.test.js && node tests/skill-contract.test.js && node tests/skill-registry.test.js && node tests/planning-skillref.test.js && node tests/planning-chain-compiler.test.js && node tests/interrupt-contract.test.js && node tests/task-state-machine.test.js && node tests/daemon-state-integration.test.js && node tests/reflex-arbitration.test.js && node tests/capability-selftest.test.js"
+    "test": "node tests/hardening.test.js && node tests/execution-result-normalization.test.js && node tests/skill-contract.test.js && node tests/skill-registry.test.js && node tests/planning-skillref.test.js && node tests/planning-chain-compiler.test.js && node tests/interrupt-contract.test.js && node tests/task-state-machine.test.js && node tests/task-state-idempotent.test.js && node tests/daemon-state-integration.test.js && node tests/runtime-chain-abort.test.js && node tests/reflex-arbitration.test.js && node tests/reflex-damage-fallback.test.js && node tests/planner-user-intent-suppress.test.js && node tests/capability-selftest.test.js"
   },
   "keywords": [],
   "author": "",

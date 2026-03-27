@@ -223,7 +223,7 @@ async function testDamageInterruptUsesNormalizedPath() {
     },
     chainExecutor: { run: async () => ({ completed: 0, total: 0, interrupted: false, failedStep: null, results: [] }) },
     reflexLayer: {
-      arbitrate: () => ({ shouldInterrupt: false, source: 'reflex', priority: 'low', interruptReason: 'none' }),
+      arbitrate: () => ({ decision: { shouldInterrupt: false, source: 'reflex', priority: 'low', interruptReason: 'none' }, matchedRule: null }),
       check: () => ({ name: 'flee_burst', reason: 'danger', execute: async () => {} }),
       execute: async () => ({ ok: true, status: 'success', actionType: 'flee_burst' }),
       isCombatMode: () => false,
@@ -258,7 +258,7 @@ async function testInterruptLogsIncludePolicyReason() {
     chainExecutor: {
       run: async () => new Promise(() => {}), // keep lock path
     },
-    reflexLayer: { check: () => null, isCombatMode: () => false, arbitrate: () => ({ shouldInterrupt: false, source: 'reflex', priority: 'low', interruptReason: 'none' }) },
+    reflexLayer: { check: () => null, isCombatMode: () => false, arbitrate: () => ({ decision: { shouldInterrupt: false, source: 'reflex', priority: 'low', interruptReason: 'none' }, matchedRule: null }) },
   })
   const first = daemon.runSingleCycleForTest()
   await new Promise((r) => setTimeout(r, 10))

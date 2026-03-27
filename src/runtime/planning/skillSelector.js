@@ -75,7 +75,7 @@ function scoreCandidate(base, {
   return score
 }
 
-function chooseHardcodedSkill({ goal, snapshot }) {
+function chooseHardcodedSkill({ goal, snapshot, options = {} }) {
   const caps = inferCapabilities(snapshot)
   const candidates = [
     { name: 'attack_nearest_hostile', args: {}, baseScore: 0 },
@@ -89,6 +89,12 @@ function chooseHardcodedSkill({ goal, snapshot }) {
 
   let picked = null
   for (const c of candidates) {
+    if (c.name === 'mine_named_block' && options.suppressWoodGather) {
+      const g = normalizeText(goal)
+      const woodIntent = g.includes('wood') || g.includes('log') || g.includes('tree')
+        || g.includes('砍') || g.includes('树') || g.includes('木头')
+      if (!woodIntent) continue
+    }
     const score = scoreCandidate(c, { goalText: goal, snapshot: snapshot || {}, caps })
     if (score < 1.2) continue
     if (!picked || score > picked.score) picked = { ...c, score }

@@ -17,8 +17,8 @@ const ALLOWED = Object.freeze({
   executing: new Set(['completed', 'failed', 'interrupted', 'recovering']),
   interrupted: new Set(['recovering', 'assessing', 'cooling_down']),
   recovering: new Set(['assessing', 'failed', 'completed']),
-  completed: new Set(['cooling_down', 'assessing', 'idle']),
-  failed: new Set(['recovering', 'assessing', 'cooling_down']),
+  completed: new Set(['cooling_down', 'assessing', 'idle', 'interrupted', 'recovering']),
+  failed: new Set(['recovering', 'assessing', 'cooling_down', 'interrupted']),
   cooling_down: new Set(['assessing', 'idle']),
 })
 
@@ -138,8 +138,14 @@ function createTaskStateMachine({
     const executionInterruptible = currentExecutionMeta?.interruptible !== false
     const isInterruptible = skillInterruptible && executionInterruptible
 
-    if (effectiveState === 'recovering' && priority !== 'fatal_immediate') {
-      return { accept: false, policyReason: 'recovering_mode_defers_non_fatal' }
+    if (effectiveState === 'recovering') {
+      if (priority === 'fatal_immediate') {
+        /* fall through to fatal_immediate handler below */
+      } else if (priority === 'high' && source === 'damage') {
+        return { accept: true, policyReason: 'recovering_allows_high_damage' }
+      } else {
+        return { accept: false, policyReason: 'recovering_mode_defers_non_fatal' }
+      }
     }
     if (runtimeMode === 'reflex_safe' && priority === 'low') {
       return { accept: false, policyReason: 'reflex_safe_defers_low' }

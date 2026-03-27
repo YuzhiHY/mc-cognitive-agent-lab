@@ -15,6 +15,17 @@ const {
 } = require('./learnTasks')
 const { chooseHardcodedSkill } = require('./planning/skillSelector')
 const { compileActionChain } = require('./planning/chainCompiler')
+const { buildIntentAwareChain, shouldSuppressAutoWood } = require('./planning/intentFallback')
+
+function hasExplicitUserIntent(ctx, analysis) {
+  if (Array.isArray(ctx?.playerMessages) && ctx.playerMessages.length > 0) return true
+  if (ctx?.runtimeDirectives?.hadPlayerMessageBatch) return true
+  const g = String(ctx?.runtimeDirectives?.primaryGoal || analysis?.selfGoal || '').trim()
+  if (!g) return false
+  if (/maintain progress safely|fast_fallback/i.test(g)) return false
+  if (/^demo$/i.test(g) || /^test$/i.test(g)) return false
+  return true
+}
 
 function createCentralReasoning({ llm, personalityLlm }) {
   if (!llm) throw new Error('centralReasoning requires a core LLM client')
@@ -40,7 +51,39 @@ function createCentralReasoning({ llm, personalityLlm }) {
     })
   }
 
-  function quickFallbackDecision(ctx) {
+  function quickFallbackDecision(ctx, analysis = {}) {
+    if (hasExplicitUserIntent(ctx, analysis)) {
+      const texts = (ctx.playerMessages || []).map((m) => String(m.text || ''))
+      const g = String(ctx?.runtimeDirectives?.primaryGoal || analysis?.selfGoal || '')
+      const intent = buildIntentAwareChain({ goalText: g, playerTexts: texts, snapshot: ctx?.snapshot })
+      if (intent.length > 0) {
+        return {
+          thought: 'fast_fallback: intent-aware actions from user/task context',
+          actionChain: intent,
+          memoryUpdates: [],
+          nextGoalHint: 'intent_fallback',
+        }
+      }
+      const selected = chooseHardcodedSkill({
+        goal: `${g} ${texts.join(' ')}`.trim(),
+        snapshot: ctx?.snapshot || null,
+        options: { suppressWoodGather: shouldSuppressAutoWood(g, texts) },
+      })
+      if (selected?.name) {
+        return {
+          thought: `fast_fallback: stable skill matched to user context (${selected.name})`,
+          actionChain: [{ type: 'skill_ref', name: selected.name, args: selected.args || {} }],
+          memoryUpdates: [],
+          nextGoalHint: `intent_skill_${selected.name}`,
+        }
+      }
+      return {
+        thought: 'fast_fallback: explicit intent — recovery probe (no idle wait)',
+        actionChain: [{ type: 'skill_ref', name: 'recover_from_stuck', args: {} }],
+        memoryUpdates: [],
+        nextGoalHint: 'intent_recovery_probe',
+      }
+    }
     const blocks = ctx?.snapshot?.nearby?.blocks || []
     const hasOak = blocks.some((b) => String(b.name || '').toLowerCase() === 'oak_log')
     const hasDirt = blocks.some((b) => String(b.name || '').toLowerCase() === 'dirt' || String(b.name || '').toLowerCase() === 'grass_block')
@@ -268,6 +311,7 @@ function createCentralReasoning({ llm, personalityLlm }) {
       const selected = chooseHardcodedSkill({
         goal: analysis?.selfGoal || analysis?.situationAnalysis || '',
         snapshot: ctx?.snapshot || null,
+        options: { suppressWoodGather: hasExplicitUserIntent(ctx, analysis) },
       })
       if (selected?.name) {
         decision.actionChain = [{ type: 'skill_ref', name: selected.name, args: selected.args || {} }]
@@ -278,6 +322,11 @@ function createCentralReasoning({ llm, personalityLlm }) {
       actionChain: decision.actionChain,
       goal: analysis?.selfGoal || analysis?.situationAnalysis || '',
       snapshot: ctx?.snapshot || null,
+      planningContext: {
+        explicitUserIntent: hasExplicitUserIntent(ctx, analysis),
+        goalText: analysis?.selfGoal || ctx?.runtimeDirectives?.primaryGoal || '',
+        playerTexts: (ctx.playerMessages || []).map((m) => String(m.text || '')),
+      },
     })
     decision.actionChain = applyPersonaPreferenceTieBreak(
       decision.actionChain,
@@ -509,7 +558,7 @@ function createCentralReasoning({ llm, personalityLlm }) {
         'decide',
       )
     } catch {
-      decision = quickFallbackDecision(ctx)
+      decision = quickFallbackDecision(ctx, analysis)
     }
 
     try {
