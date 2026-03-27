@@ -1,0 +1,445 @@
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+const HOSTILE_MOBS = new Set([
+  'zombie', 'skeleton', 'creeper', 'spider', 'cave_spider', 'enderman',
+  'witch', 'slime', 'magma_cube', 'blaze', 'ghast', 'wither_skeleton',
+  'phantom', 'drowned', 'husk', 'stray', 'pillager', 'vindicator',
+  'ravager', 'evoker', 'vex', 'hoglin', 'piglin_brute', 'warden',
+  'zombified_piglin', 'guardian', 'elder_guardian', 'shulker',
+])
+
+const FOOD_ITEMS = new Set([
+  'bread', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton',
+  'cooked_rabbit', 'cooked_salmon', 'cooked_cod', 'baked_potato', 'golden_apple',
+  'apple', 'melon_slice', 'sweet_berries', 'carrot', 'beetroot', 'dried_kelp',
+  'mushroom_stew', 'rabbit_stew', 'beetroot_soup', 'pumpkin_pie', 'cookie',
+  'golden_carrot', 'enchanted_golden_apple',
+])
+
+function hasFoodInInventory(inventory) {
+  const items = Array.isArray(inventory?.summary) ? inventory.summary : (Array.isArray(inventory) ? inventory : [])
+  return items.some((item) => FOOD_ITEMS.has(item?.name))
+}
+
+function isNearLava(blocks) {
+  if (!Array.isArray(blocks)) return false
+  return blocks.some((b) =>
+    (b.name === 'lava' || b.name === 'flowing_lava') && (b.distance || Infinity) <= 2
+  )
+}
+
+function columnBlockedAt(bot, floored, fx, fz) {
+  const cell = floored.offset(fx, 0, fz)
+  const low = bot.blockAt(cell)
+  const high = bot.blockAt(cell.offset(0, 1, 0))
+  const solid = (b) => b && b.name !== 'air' && b.name !== 'bedrock'
+  return solid(low) && solid(high)
+}
+
+/** No pathfinder / api.navigateTo — immediate sprint in clearest away direction */
+async function pureFleeBurst(bot, awayDx, awayDz, ms = 900) {
+  const pos = bot.entity?.position
+  const floored = pos?.floored()
+  if (!pos || !floored) return
+  let dx = awayDx
+  let dz = awayDz
+  const mag = Math.sqrt(dx * dx + dz * dz) || 1
+  dx /= mag
+  dz /= mag
+  const dirs = [[dx, dz], [-dz, dx], [dz, -dx], [-dx, -dz]]
+  try { bot.pathfinder?.setGoal?.(null) } catch { /* */ }
+  for (const [tx, tz] of dirs) {
+    const fx = Math.round(tx)
+    const fz = Math.round(tz)
+    if (columnBlockedAt(bot, floored, fx, fz)) continue
+    const yaw = Math.atan2(-tx, -tz)
+    await bot.look(yaw, bot.entity.pitch, true)
+    bot.setControlState('sprint', true)
+    bot.setControlState('forward', true)
+    bot.setControlState('jump', true)
+    await sleep(ms)
+    bot.setControlState('forward', false)
+    bot.setControlState('sprint', false)
+    bot.setControlState('jump', false)
+    return
+  }
+  const yaw = Math.atan2(-dx, -dz)
+  await bot.look(yaw, bot.entity.pitch, true)
+  bot.setControlState('sprint', true)
+  bot.setControlState('forward', true)
+  bot.setControlState('jump', true)
+  await sleep(Math.floor(ms * 0.65))
+  bot.setControlState('forward', false)
+  bot.setControlState('sprint', false)
+  bot.setControlState('jump', false)
+}
+
+function vectorFromNearestHostile(bot) {
+  const origin = bot.entity?.position
+  if (!origin) return null
+  let best = null
+  let bestD = Infinity
+  for (const e of Object.values(bot.entities || {})) {
+    if (!e?.position || e.id === bot.entity?.id) continue
+    const name = (e.name || e.kind || '').toLowerCase()
+    if (!HOSTILE_MOBS.has(name)) continue
+    const d = origin.distanceTo(e.position)
+    if (d < bestD) {
+      bestD = d
+      best = e
+    }
+  }
+  if (!best) return null
+  return {
+    dx: origin.x - best.position.x,
+    dz: origin.z - best.position.z,
+    dist: bestD,
+  }
+}
+
+function nearestCreeperDistance(bot) {
+  const origin = bot.entity?.position
+  if (!origin) return Infinity
+  let best = Infinity
+  for (const e of Object.values(bot.entities || {})) {
+    if (!e?.position || e.id === bot.entity?.id) continue
+    if ((e.name || '').toLowerCase() !== 'creeper') continue
+    best = Math.min(best, origin.distanceTo(e.position))
+  }
+  return best
+}
+
+function vectorFromNearestCreeper(bot) {
+  const origin = bot.entity?.position
+  if (!origin) return null
+  let best = null
+  let bestD = Infinity
+  for (const e of Object.values(bot.entities || {})) {
+    if (!e?.position || e.id === bot.entity?.id) continue
+    if ((e.name || '').toLowerCase() !== 'creeper') continue
+    const d = origin.distanceTo(e.position)
+    if (d < bestD) {
+      bestD = d
+      best = e
+    }
+  }
+  if (!best) return null
+  return {
+    dx: origin.x - best.position.x,
+    dz: origin.z - best.position.z,
+    dist: bestD,
+  }
+}
+
+function hasWeaponInInventory(inventory) {
+  const items = Array.isArray(inventory?.summary) ? inventory.summary : (Array.isArray(inventory) ? inventory : [])
+  return items.some((item) => {
+    const n = (item?.name || '').toLowerCase()
+    return n.includes('sword') || n.includes('axe') || n.includes('bow')
+  })
+}
+
+function weaponScore(name) {
+  const n = String(name || '').toLowerCase()
+  if (n.includes('netherite_sword')) return 100
+  if (n.includes('diamond_sword')) return 95
+  if (n.includes('iron_sword')) return 90
+  if (n.includes('stone_sword')) return 80
+  if (n.includes('wooden_sword') || n.includes('golden_sword')) return 70
+  if (n.includes('netherite_axe')) return 66
+  if (n.includes('diamond_axe')) return 62
+  if (n.includes('iron_axe')) return 58
+  if (n.includes('stone_axe')) return 52
+  if (n.includes('wooden_axe') || n.includes('golden_axe')) return 45
+  return -1
+}
+
+function bestWeaponItem(bot) {
+  const items = bot?.inventory?.items?.() || []
+  let best = null
+  let bestScore = -1
+  for (const it of items) {
+    const s = weaponScore(it?.name)
+    if (s > bestScore) {
+      bestScore = s
+      best = it
+    }
+  }
+  return bestScore >= 0 ? best : null
+}
+
+async function ensureWeaponInHand(bot) {
+  const hand = bot?.heldItem
+  if (weaponScore(hand?.name) >= 0) return true
+  const best = bestWeaponItem(bot)
+  if (!best) return false
+  try {
+    await bot.equip(best, 'hand')
+    return true
+  } catch {
+    return false
+  }
+}
+
+function nearbyHostiles(bot, maxDistance = 2.8) {
+  const origin = bot.entity?.position
+  if (!origin) return []
+  return Object.values(bot.entities || {})
+    .filter((e) => {
+      if (!e?.position || e.id === bot.entity?.id) return false
+      if (!HOSTILE_MOBS.has((e.name || '').toLowerCase())) return false
+      return origin.distanceTo(e.position) <= maxDistance
+    })
+    .sort((a, b) => origin.distanceTo(a.position) - origin.distanceTo(b.position))
+}
+
+function createReflexLayer(bot) {
+  let lastHealth = bot?.health ?? 20
+  let beingAttacked = false
+  let lastAttackAt = 0
+  let combatModeUntilTs = 0
+
+  if (bot) {
+    bot.on('health', () => {
+      if (bot.health < lastHealth) beingAttacked = true
+      lastHealth = bot.health
+    })
+  }
+
+  function resetAttackFlag() { beingAttacked = false }
+  function enterCombatMode(ms = 2500) {
+    const until = Date.now() + ms
+    if (until > combatModeUntilTs) combatModeUntilTs = until
+  }
+  function isCombatMode() {
+    return Date.now() < combatModeUntilTs
+  }
+  function noteDamage() {
+    enterCombatMode(3000)
+  }
+
+  const rules = [
+    {
+      id: 'emergency_lava',
+      name: 'emergency_jump',
+      priority: 200,
+      condition: (snapshot) => isNearLava(snapshot.nearby?.blocks),
+      reason: 'Near lava — emergency jump to escape',
+      execute: async ({ bot: b }) => {
+        b.setControlState('jump', true)
+        b.setControlState('sprint', true)
+        b.setControlState('forward', true)
+        await new Promise((r) => setTimeout(r, 1500))
+        b.setControlState('jump', false)
+        b.setControlState('forward', false)
+        b.setControlState('sprint', false)
+      },
+    },
+    {
+      id: 'creeper_close_pure_flee',
+      name: 'flee_burst',
+      priority: 198,
+      condition: () => nearestCreeperDistance(bot) <= 6,
+      reason: 'Creeper nearby — instant sprint away (no pathfinder)',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2200)
+        const v = vectorFromNearestCreeper(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 1100)
+        resetAttackFlag()
+      },
+    },
+    {
+      id: 'hostile_very_close_pure_flee',
+      name: 'flee_burst',
+      priority: 196,
+      condition: () => {
+        const v = vectorFromNearestHostile(bot)
+        return v && v.dist <= 3.6
+      },
+      reason: 'Hostile in melee range — burst escape',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2200)
+        const v = vectorFromNearestHostile(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 850)
+        resetAttackFlag()
+      },
+    },
+    {
+      id: 'flee_critical_health',
+      name: 'flee',
+      priority: 150,
+      condition: (snapshot) => {
+        const health = snapshot.status?.health ?? 20
+        return health <= 5
+      },
+      reason: 'Critical health — flee regardless',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2600)
+        const v = vectorFromNearestHostile(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 1400)
+        else {
+          b.setControlState('sprint', true)
+          b.setControlState('forward', true)
+          await sleep(2500)
+          b.setControlState('forward', false)
+          b.setControlState('sprint', false)
+        }
+        resetAttackFlag()
+      },
+    },
+    {
+      id: 'eat_food_for_regen',
+      name: 'eat_food',
+      priority: 125,
+      condition: (snapshot) => {
+        if (!hasFoodInInventory(snapshot.inventory)) return false
+        const health = snapshot.status?.health ?? 20
+        const food = snapshot.status?.food ?? 20
+        const threat = snapshot.threat_level
+        if (food >= 20) return false
+        if (health >= 20 && food >= 18) return false
+        if (threat === 'high') return false
+        return health < 20 && food < 20
+      },
+      reason: 'Injured — eat to refill hunger so natural regen can work (full hunger heals HP)',
+      execute: async ({ bot: b }) => {
+        const inventory = b.inventory.items()
+        const foodItem = inventory.find((item) => FOOD_ITEMS.has(item?.name))
+        if (foodItem) {
+          await b.equip(foodItem, 'hand')
+          b.activateItem()
+          await sleep(1850)
+          b.deactivateItem()
+        }
+      },
+    },
+    {
+      id: 'fight_back_armed',
+      name: 'fight_back',
+      priority: 110,
+      condition: (snapshot) => {
+        const threat = snapshot.threat_level
+        const closeHostiles = nearbyHostiles(bot, 2.8).length
+        if (closeHostiles > 0) return true
+        if (threat !== 'high' && threat !== 'low') return false
+        if (!beingAttacked && threat !== 'high') return false
+        const health = snapshot.status?.health ?? 20
+        if (health <= 5) return false
+        return hasWeaponInInventory(snapshot.inventory)
+      },
+      reason: 'Threat detected and armed/close — fight back',
+      execute: async ({ bot: b }) => {
+        const origin = b.entity?.position
+        if (!origin) return
+        enterCombatMode(2600)
+        const armed = await ensureWeaponInHand(b)
+        const attackCdMs = 625
+        const deadline = Date.now() + 2600
+        while (Date.now() < deadline) {
+          const hostiles = nearbyHostiles(b, 2.8)
+          const target = hostiles[0]
+          if (!target) break
+          if (!target.isValid) continue
+          if (!armed) {
+            const v = vectorFromNearestHostile(b)
+            if (v) await pureFleeBurst(b, v.dx, v.dz, 600)
+            break
+          }
+          const now = Date.now()
+          const wait = attackCdMs - (now - lastAttackAt)
+          if (wait > 0) await sleep(wait)
+          try {
+            await b.lookAt(target.position.offset(0, target.height || 1, 0))
+            b.attack(target)
+            lastAttackAt = Date.now()
+          } catch { break }
+          await sleep(30)
+        }
+        resetAttackFlag()
+      },
+    },
+    {
+      id: 'fight_back_unarmed',
+      name: 'fight_back',
+      priority: 100,
+      condition: (snapshot) => {
+        if (!beingAttacked) return false
+        const health = snapshot.status?.health ?? 20
+        if (health <= 8) return false
+        const threat = snapshot.threat_level
+        return threat === 'high' || threat === 'low'
+      },
+      reason: 'Being attacked unarmed but healthy — punch back',
+      execute: async ({ bot: b }) => {
+        const origin = b.entity?.position
+        if (!origin) return
+        enterCombatMode(2200)
+        const attackCdMs = 625
+        const deadline = Date.now() + 1500
+        while (Date.now() < deadline) {
+          const hostiles = nearbyHostiles(b, 2.2)
+          const target = hostiles[0]
+          if (!target) break
+          if (!target.isValid) continue
+          const now = Date.now()
+          const wait = attackCdMs - (now - lastAttackAt)
+          if (wait > 0) await sleep(wait)
+          try {
+            await b.lookAt(target.position.offset(0, target.height || 1, 0))
+            b.attack(target)
+            lastAttackAt = Date.now()
+          } catch { break }
+          await sleep(30)
+        }
+        resetAttackFlag()
+      },
+    },
+    {
+      id: 'flee_unarmed_low_health',
+      name: 'flee',
+      priority: 90,
+      condition: (snapshot) => {
+        const threat = snapshot.threat_level
+        if (threat !== 'high') return false
+        const health = snapshot.status?.health ?? 20
+        return health <= 12 && !hasWeaponInInventory(snapshot.inventory)
+      },
+      reason: 'Under threat, unarmed, losing health — flee',
+      execute: async ({ bot: b }) => {
+        enterCombatMode(2400)
+        const v = vectorFromNearestHostile(b)
+        if (v) await pureFleeBurst(b, v.dx, v.dz, 1200)
+        resetAttackFlag()
+      },
+    },
+  ]
+
+  function check(snapshot, ctx) {
+    const triggered = rules
+      .filter((rule) => {
+        try {
+          return rule.condition(snapshot, ctx)
+        } catch {
+          return false
+        }
+      })
+      .sort((a, b) => b.priority - a.priority)
+
+    if (triggered.length === 0) return null
+    return triggered[0]
+  }
+
+  return Object.freeze({
+    check,
+    rules,
+    isBeingAttacked: () => beingAttacked,
+    isCombatMode,
+    enterCombatMode,
+    noteDamage,
+    resetAttackFlag,
+  })
+}
+
+module.exports = { createReflexLayer, HOSTILE_MOBS, FOOD_ITEMS }

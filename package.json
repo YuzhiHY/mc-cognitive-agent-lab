@@ -1,0 +1,22 @@
+{
+  "name": "agent",
+  "version": "1.0.0",
+  "description": "Mineflayer-based Minecraft AI agent framework (sense→think→code→execute loop)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "daemon": "node src/index.js --daemon",
+    "live-selftest": "node src/index.js --live-selftest",
+    "dev": "node src/index.js",
+    "test": "node tests/hardening.test.js && node tests/capability-selftest.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "mineflayer": "^4.35.0",
+    "mineflayer-crafting-util": "^0.2.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "thought": "Explain why this next action helps the task.",
+  "skillName": "my_skill_name",
+  "code": "module.exports.run = async ({ api, ctx }) => {\n  // ctx.task.goal, ctx.snapshot, ctx.history, ctx.step are available.\n  api.chat(`[agent] step=${ctx.step} goal=${ctx.task.goal}`);\n  await api.sleep(200);\n\n  // Return done:false to continue planning in next loop.\n  // Return done:true (or omit done) to finish current task.\n  return { done: true, note: 'replace with real action' };\n};"
+}
+

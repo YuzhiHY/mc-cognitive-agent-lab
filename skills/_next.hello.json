@@ -1,0 +1,5 @@
+{
+  "thought": "先验证执行通路是否可用：发送聊天消息后结束任务。",
+  "skillName": "hello_chat_once",
+  "code": "module.exports.run = async ({ api, ctx }) => {\n  const goal = ctx?.task?.goal || 'demo';\n  api.chat(`[agent] goal=${goal}`);\n  await api.sleep(300);\n  return { done: true, note: 'hello sent' };\n};"
+}

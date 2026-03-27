@@ -1,0 +1,10 @@
+{
+  "skillName": "decision_scan_once",
+  "thought": "先做一次环境扫描与风险/目标判断，验证 Perception->Decision 输出稳定，不做移动或采集动作。",
+  "intent": "Say hello in chat and finish",
+  "tags": [
+    "generated",
+    "step_1"
+  ],
+  "updatedAt": "2026-03-26T06:16:03.723Z"
+}

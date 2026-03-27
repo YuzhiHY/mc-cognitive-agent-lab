@@ -1,0 +1,192 @@
+{
+  "learned:auto:nav:nearest_crafting_table -> craft:stone_pickaxe#1": {
+    "signature": "nav:nearest_crafting_table -> craft:stone_pickaxe#1",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:25:45.539Z",
+    "lastSeenAt": "2026-03-27T01:25:45.539Z"
+  },
+  "learned:auto:nav:nearest_crafting_table -> dig:crafting_table": {
+    "signature": "nav:nearest_crafting_table -> dig:crafting_table",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:26:50.209Z",
+    "lastSeenAt": "2026-03-27T01:26:50.209Z"
+  },
+  "learned:auto:craft:stone_pickaxe#1 -> nav:nearest_crafting_table -> dig:crafting_table": {
+    "signature": "craft:stone_pickaxe#1 -> nav:nearest_crafting_table -> dig:crafting_table",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:27:29.727Z",
+    "lastSeenAt": "2026-03-27T01:27:29.727Z"
+  },
+  "learned:auto:chat -> skill:place_block -> wait -> dig:crafting_table": {
+    "signature": "chat -> skill:place_block -> wait -> dig:crafting_table",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:28:07.206Z",
+    "lastSeenAt": "2026-03-27T01:28:07.206Z"
+  },
+  "learned:auto:skill:place_block -> wait -> nav:nearest_crafting_table -> dig:crafting_table": {
+    "signature": "skill:place_block -> wait -> nav:nearest_crafting_table -> dig:crafting_table",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:28:44.734Z",
+    "lastSeenAt": "2026-03-27T01:28:44.734Z"
+  },
+  "learned:auto:craft:stone_pickaxe#1 -> nav:nearest_dirt -> dig:dirt -> craft:crafting_table#1 -> dig:crafting_table": {
+    "signature": "craft:stone_pickaxe#1 -> nav:nearest_dirt -> dig:dirt -> craft:crafting_table#1 -> dig:crafting_table",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:29:52.953Z",
+    "lastSeenAt": "2026-03-27T01:29:52.953Z"
+  },
+  "learned:auto:chat -> skill:place_block -> wait -> nav:nearest_crafting_table -> dig:crafting_table": {
+    "signature": "chat -> skill:place_block -> wait -> nav:nearest_crafting_table -> dig:crafting_table",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:30:36.170Z",
+    "lastSeenAt": "2026-03-27T01:30:36.170Z"
+  },
+  "learned:auto:craft:stone_pickaxe#1": {
+    "signature": "craft:stone_pickaxe#1",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:31:15.586Z",
+    "lastSeenAt": "2026-03-27T01:31:15.586Z"
+  },
+  "learned:auto:chat": {
+    "signature": "chat",
+    "successCount": 2,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:31:52.905Z",
+    "lastSeenAt": "2026-03-27T01:54:51.554Z"
+  },
+  "learned:auto:chat -> craft:stone_pickaxe#1": {
+    "signature": "chat -> craft:stone_pickaxe#1",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:32:34.974Z",
+    "lastSeenAt": "2026-03-27T01:32:34.974Z"
+  },
+  "learned:auto:chat -> nav:nearest_dirt": {
+    "signature": "chat -> nav:nearest_dirt",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:33:38.609Z",
+    "lastSeenAt": "2026-03-27T01:33:38.609Z"
+  },
+  "learned:auto:chat -> skill:place_block -> wait": {
+    "signature": "chat -> skill:place_block -> wait",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:34:17.621Z",
+    "lastSeenAt": "2026-03-27T01:34:17.621Z"
+  },
+  "learned:auto:nav:nearest_oak_log -> dig:oak_log": {
+    "signature": "nav:nearest_oak_log -> dig:oak_log",
+    "successCount": 5,
+    "failCount": 61,
+    "promoted": true,
+    "firstSeenAt": "2026-03-27T01:46:06.133Z",
+    "lastSeenAt": "2026-03-27T03:54:28.899Z",
+    "pendingVerification": false,
+    "pendingSince": "2026-03-27T02:58:44.188Z",
+    "promotedType": "synthesized_skill_file",
+    "promotedSkillName": "learned_chain_auto_1774580342391"
+  },
+  "learned:auto:nav:nearest_player -> chat": {
+    "signature": "nav:nearest_player -> chat",
+    "successCount": 4,
+    "failCount": 1,
+    "promoted": true,
+    "firstSeenAt": "2026-03-27T01:46:53.039Z",
+    "lastSeenAt": "2026-03-27T02:51:13.527Z",
+    "promotedType": "synthesized_skill_file",
+    "promotedSkillName": "learned_chain_auto_1774576546788"
+  },
+  "learned:auto:place": {
+    "signature": "place",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:47:32.090Z",
+    "lastSeenAt": "2026-03-27T01:47:32.090Z"
+  },
+  "learned:auto:chat -> nav:nearest_crafting_table -> craft:stone_pickaxe#1": {
+    "signature": "chat -> nav:nearest_crafting_table -> craft:stone_pickaxe#1",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:48:24.059Z",
+    "lastSeenAt": "2026-03-27T01:48:24.059Z"
+  },
+  "learned:auto:nav:nearest_player -> chat -> nav:nearest_crafting_table -> dig:crafting_table": {
+    "signature": "nav:nearest_player -> chat -> nav:nearest_crafting_table -> dig:crafting_table",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:51:44.658Z",
+    "lastSeenAt": "2026-03-27T01:51:44.658Z"
+  },
+  "learned:auto:chat -> nav:nearest_player": {
+    "signature": "chat -> nav:nearest_player",
+    "successCount": 1,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:52:26.715Z",
+    "lastSeenAt": "2026-03-27T01:52:26.715Z"
+  },
+  "learned:auto:nav:nearest_dirt -> dig:dirt": {
+    "signature": "nav:nearest_dirt -> dig:dirt",
+    "successCount": 0,
+    "failCount": 2,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T01:53:11.109Z",
+    "lastSeenAt": "2026-03-27T01:54:11.342Z"
+  },
+  "skill:learned_chain_auto_1774576546788": {
+    "skillName": "learned_chain_auto_1774576546788",
+    "filePath": "C:\\MCproject\\AGENT\\skills\\learned_chain_auto_1774576546788.js",
+    "source": "auto_promoted",
+    "signature": "nav:nearest_player -> chat",
+    "successCount": 3,
+    "promotedAt": "2026-03-27T01:55:46.789Z"
+  },
+  "learned:auto:chat -> nav:nearest_oak_log -> dig:oak_log": {
+    "signature": "chat -> nav:nearest_oak_log -> dig:oak_log",
+    "successCount": 2,
+    "failCount": 0,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T02:42:18.710Z",
+    "lastSeenAt": "2026-03-27T02:43:05.846Z"
+  },
+  "learned:auto:nav:nearest_oak_log -> dig:oak_log -> craft:oak_planks#4 -> craft:stick#4 -> craft:wooden_sword#1 -> equip:wooden_sword": {
+    "signature": "nav:nearest_oak_log -> dig:oak_log -> craft:oak_planks#4 -> craft:stick#4 -> craft:wooden_sword#1 -> equip:wooden_sword",
+    "successCount": 0,
+    "failCount": 1,
+    "promoted": false,
+    "firstSeenAt": "2026-03-27T02:49:53.406Z",
+    "lastSeenAt": "2026-03-27T02:49:53.406Z"
+  },
+  "skill:learned_chain_auto_1774580342391": {
+    "skillName": "learned_chain_auto_1774580342391",
+    "filePath": "C:\\MCproject\\AGENT\\skills\\learned_chain_auto_1774580342391.js",
+    "source": "auto_promoted",
+    "signature": "nav:nearest_oak_log -> dig:oak_log",
+    "successCount": 4,
+    "promotedAt": "2026-03-27T02:59:02.393Z"
+  }
+}

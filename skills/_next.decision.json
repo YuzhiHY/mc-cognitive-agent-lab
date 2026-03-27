@@ -1,0 +1,6 @@
+{
+  "thought": "先做一次环境扫描与风险/目标判断，验证 Perception->Decision 输出稳定，不做移动或采集动作。",
+  "skillName": "decision_scan_once",
+  "code": "module.exports.run = async ({ api, ctx }) => {\n  const blocks = ctx?.snapshot?.nearby?.blocks || []\n  const entities = ctx?.snapshot?.nearby?.entities || []\n  const inv = ctx?.snapshot?.inventory?.summary || []\n\n  const blockNames = blocks.map((b) => b.name)\n  const entityNames = entities.map((e) => e.name || e.type || 'unknown')\n\n  const risks = []\n  if (entityNames.some((n) => String(n).includes('zombie') || String(n).includes('creeper'))) {\n    risks.push('hostile_entity_nearby')\n  }\n\n  const targets = {\n    blocks: Array.from(new Set(blockNames)).slice(0, 10),\n    entities: Array.from(new Set(entityNames)).slice(0, 10)\n  }\n\n  const decision = {\n    summary: `blocks=${blocks.length}, entities=${entities.length}, invKinds=${inv.length}`,\n    risks,\n    targets,\n    recommendation: {\n      next: risks.length ? 'be_cautious' : 'continue_observing',\n      why: risks.length ? 'Potential hostile entity nearby' : 'No immediate risks detected'\n    }\n  }\n\n  api.chat(`[decision] ${decision.summary}`)\n  return { done: true, decision }\n}\n"
+}
+

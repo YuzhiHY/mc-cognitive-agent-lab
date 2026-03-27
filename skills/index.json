@@ -1,0 +1,41 @@
+{
+  "skills": [
+    {
+      "skillName": "decision_scan_once",
+      "filePath": "decision_scan_once.js",
+      "enabled": true,
+      "intent": "Scan nearby blocks and entities and produce a compact decision report",
+      "tags": ["scan", "decision", "observe", "risk"],
+      "goalPatterns": ["*hello*", "*scan*", "*observe*", "*risk*"],
+      "minScoreOverride": 0.1,
+      "riskLevel": "low",
+      "movementIntent": false,
+      "fallbackSkill": "hello_chat_once",
+      "preconditions": [],
+      "success_condition": "result.done === true",
+      "failure_condition": "execution.error != null",
+      "timeout": 8000,
+      "emotional_tag": "observant"
+    },
+    {
+      "skillName": "hello_chat_once",
+      "filePath": "hello_chat_once.js",
+      "enabled": false,
+      "intent": "Send one hello chat and finish",
+      "tags": ["hello", "chat", "smoke-test"],
+      "goalPatterns": ["*hello*", "*smoke*"],
+      "minScoreOverride": 0.25,
+      "riskLevel": "low",
+      "movementIntent": false,
+      "fallbackSkill": null,
+      "preconditions": [
+        { "field": "ctx.snapshot.status.health", "op": "gte", "value": 1 }
+      ],
+      "success_condition": "result.done === true",
+      "failure_condition": "execution.error != null",
+      "timeout": 5000,
+      "emotional_tag": "friendly"
+    }
+  ]
+}
+
