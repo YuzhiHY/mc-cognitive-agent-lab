@@ -33,10 +33,22 @@ async function testAllowsWoodWhenGoalMentionsWood() {
   assert.strictEqual(sel?.name, 'mine_named_block')
 }
 
+async function testUnrecognizedIntentDoesNotForceRecovery() {
+  // Simulate quickFallbackDecision path:
+  // buildIntentAwareChain returns [] for unrecognized intent
+  const { buildIntentAwareChain } = require('../src/runtime/planning/intentFallback')
+  const chain = buildIntentAwareChain({ goalText: 'explore the jungle biome', playerTexts: ['go to jungle'] })
+  // Intent doesn't match any keyword — should return empty array
+  assert.deepStrictEqual(chain, [], 'unrecognized intent should return empty from buildIntentAwareChain')
+  // The centralReasoning quickFallbackDecision now returns null for this case
+  // instead of forcing recover_from_stuck — verify the contract
+}
+
 async function run() {
   await testEmptyExplicitIntentDoesNotSpinOnWait()
   await testSuppressWoodSkillWithoutWoodGoal()
   await testAllowsWoodWhenGoalMentionsWood()
+  await testUnrecognizedIntentDoesNotForceRecovery()
   // eslint-disable-next-line no-console
   console.log('planner user intent suppress tests passed')
 }

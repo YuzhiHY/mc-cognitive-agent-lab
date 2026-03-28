@@ -79,12 +79,9 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
           nextGoalHint: `intent_skill_${selected.name}`,
         }
       }
-      return {
-        thought: 'fast_fallback: explicit intent — recovery probe (no idle wait)',
-        actionChain: [{ type: 'skill_ref', name: 'recover_from_stuck', args: {} }],
-        memoryUpdates: [],
-        nextGoalHint: 'intent_recovery_probe',
-      }
+      // Intent exists but no keyword/skill matched — do NOT force recovery.
+      // Return null to signal caller should invoke full LLM planning instead.
+      return null
     }
     const blocks = ctx?.snapshot?.nearby?.blocks || []
     const hasOak = blocks.some((b) => String(b.name || '').toLowerCase() === 'oak_log')
@@ -588,6 +585,21 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       )
     } catch {
       decision = quickFallbackDecision(ctx, analysis)
+      // quickFallbackDecision returns null when intent exists but no pattern matched —
+      // use a minimal safe fallback that does not force recovery or idle.
+      if (!decision) {
+        const texts = (ctx?.playerMessages || []).map((m) => String(m.text || ''))
+        const g = String(ctx?.runtimeDirectives?.primaryGoal || analysis?.selfGoal || '')
+        decision = {
+          thought: `fast_fallback: unrecognized intent, acknowledging — "${g || texts[0] || '?'}"`,
+          actionChain: [
+            { type: 'chat', message: `我收到了指令，但需要更多时间规划。` },
+            { type: 'wait', timeoutMs: 800 },
+          ],
+          memoryUpdates: [],
+          nextGoalHint: 'intent_pending_llm',
+        }
+      }
     }
 
     try {

@@ -91,7 +91,7 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
     return null
   }
 
-  async function executeStep(step, { api, bot, ctx, state }) {
+  async function executeStep(step, { api, bot, ctx, state, signal }) {
     const type = step.type || 'unknown'
     const startedAt = Date.now()
     const okOut = (result, reason = 'ok') => {
@@ -156,7 +156,10 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
         }
         try {
           const timeoutMs = adaptiveTimeoutMs(step, ctx, bot, target)
-          await navigateWithObstacleClear(bot, api, target, { sprint: step.sprint || false, timeoutMs })
+          const navResult = await navigateWithObstacleClear(bot, api, target, { sprint: step.sprint || false, timeoutMs, abortSignal: signal })
+          if (navResult?.reason === 'aborted') {
+            return { ...interruptedResult({ source: 'chain', actionType: 'navigate', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal', details: {} }), result: navResult }
+          }
           return okOut({ type: 'navigate', arrived: true }, 'arrived')
         } catch (err) {
           const msg = String(err?.message || err || '').toLowerCase()
@@ -188,7 +191,18 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
 
       case 'wait': {
         const timeoutMs = step.timeoutMs || 5000
-        await sleep(timeoutMs)
+        // Abort-aware sleep: check signal every 200ms instead of blocking
+        if (signal) {
+          const deadline = Date.now() + timeoutMs
+          while (Date.now() < deadline) {
+            if (signal.aborted) {
+              return { ...interruptedResult({ source: 'chain', actionType: 'wait', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal', details: {} }), result: { type: 'wait', aborted: true } }
+            }
+            await sleep(Math.min(200, deadline - Date.now()))
+          }
+        } else {
+          await sleep(timeoutMs)
+        }
         return okOut({ type: 'wait', waited: timeoutMs }, 'wait_done')
       }
 
@@ -216,15 +230,21 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
           if (origin && block.position) {
             const dist = origin.distanceTo(block.position)
             if (dist > MAX_DIG_REACH) {
+              if (signal?.aborted) {
+                return { ...interruptedResult({ source: 'chain', actionType: 'dig', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal', details: {} }), result: { aborted: true } }
+              }
               const timeoutMs = adaptiveTimeoutMs({ type: 'navigate' }, ctx, bot, {
                 x: block.position.x, y: block.position.y, z: block.position.z,
               })
               try {
-                await navigateWithObstacleClear(bot, api, {
+                const navResult = await navigateWithObstacleClear(bot, api, {
                   x: block.position.x,
                   y: block.position.y,
                   z: block.position.z,
-                }, { sprint: false, timeoutMs })
+                }, { sprint: false, timeoutMs, abortSignal: signal })
+                if (navResult?.reason === 'aborted') {
+                  return { ...interruptedResult({ source: 'chain', actionType: 'dig', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal', details: {} }), result: { aborted: true } }
+                }
               } catch (e) {
                 const msg = String(e?.message || e || '').toLowerCase()
                 if (/path|stuck|timeout|no path|goal|movement/i.test(msg)) {
@@ -377,22 +397,26 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
     }
   }
 
-  async function navigateWithObstacleClear(bot, api, target, { sprint = false, timeoutMs = 12_000 } = {}) {
+  async function navigateWithObstacleClear(bot, api, target, { sprint = false, timeoutMs = 12_000, abortSignal } = {}) {
     const startPos = bot.entity?.position?.clone()
-    await api.navigateTo(target, { sprint, timeoutMs })
+    const result = await api.navigateTo(target, { sprint, timeoutMs, abortSignal })
+    if (result?.reason === 'aborted') return result
 
     const endPos = bot.entity?.position
-    if (!startPos || !endPos) return
+    if (!startPos || !endPos) return result
 
     const moved = startPos.distanceTo(endPos)
     const remaining = distanceTo(endPos, target)
 
     if (moved < 1.5 && remaining > 2) {
+      if (abortSignal?.aborted) return { arrived: false, reason: 'aborted' }
       const cleared = await clearBlockInFront(bot)
       if (cleared) {
-        await api.navigateTo(target, { sprint, timeoutMs: Math.max(4000, timeoutMs - 2000) })
+        const r2 = await api.navigateTo(target, { sprint, timeoutMs: Math.max(4000, timeoutMs - 2000), abortSignal })
+        return r2
       }
     }
+    return result
   }
 
   async function clearBlockInFront(bot) {
@@ -599,7 +623,7 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
         break
       }
 
-      const stepResult = await executeStep(step, { api, bot, ctx, state })
+      const stepResult = await executeStep(step, { api, bot, ctx, state, signal })
       results.push({ step: i, type: step.type, ...stepResult })
 
       if (signal?.aborted) {

@@ -82,7 +82,7 @@ function createApi(bot) {
       if (!block) throw new Error('api.dig: missing block')
       await bot.dig(block, 'raycast', 'raycast')
     },
-    digByName: async (blockName, { maxDistance = 16, navigate = true } = {}) => {
+    digByName: async (blockName, { maxDistance = 16, navigate = true, abortSignal } = {}) => {
       const mcData = require('minecraft-data')(bot.version)
       const blockType = mcData.blocksByName[blockName]
       if (!blockType) throw new Error(`api.digByName: unknown block '${blockName}'`)
@@ -90,7 +90,9 @@ function createApi(bot) {
       if (!found) throw new Error(`api.digByName: no '${blockName}' found within ${maxDistance}`)
       const origin = bot.entity?.position
       if (navigate && origin && found.position && origin.distanceTo(found.position) > 4.2) {
-        await api.navigateTo({ x: found.position.x, y: found.position.y, z: found.position.z }, { sprint: false, timeoutMs: 12_000 })
+        if (abortSignal?.aborted) return { dug: null, reason: 'aborted' }
+        const navResult = await api.navigateTo({ x: found.position.x, y: found.position.y, z: found.position.z }, { sprint: false, timeoutMs: 12_000, abortSignal })
+        if (navResult?.reason === 'aborted') return { dug: null, reason: 'aborted' }
         found = bot.findBlock({ matching: blockType.id, maxDistance }) || found
       }
       const center = found.position.offset(0.5, 0.5, 0.5)
@@ -117,8 +119,10 @@ function createApi(bot) {
       if (!canSee() && navigate && origin && found.position) {
         const d = origin.distanceTo(found.position)
         if (d > 1.85 && d < 8) {
+          if (abortSignal?.aborted) return { dug: null, reason: 'aborted' }
           try {
-            await api.navigateTo({ x: found.position.x, y: found.position.y, z: found.position.z }, { sprint: false, timeoutMs: 10_000 })
+            const navResult = await api.navigateTo({ x: found.position.x, y: found.position.y, z: found.position.z }, { sprint: false, timeoutMs: 10_000, abortSignal })
+            if (navResult?.reason === 'aborted') return { dug: null, reason: 'aborted' }
           } catch { /* */ }
           found = bot.findBlock({ matching: blockType.id, maxDistance }) || found
           try {
@@ -183,8 +187,11 @@ function createApi(bot) {
       return { block: blockName, position: { x: found.position.x, y: found.position.y, z: found.position.z } }
     },
 
-    navigateTo: async (pos, { sprint = false, timeoutMs = 15_000 } = {}) => {
+    navigateTo: async (pos, { sprint = false, timeoutMs = 15_000, abortSignal } = {}) => {
       if (!pos) throw new Error('api.navigateTo: missing pos')
+      if (abortSignal?.aborted) {
+        return { arrived: false, reason: 'aborted_before_start' }
+      }
       if (!hasPathfinder()) {
         throw new Error('api.navigateTo: pathfinder plugin not available')
       }
@@ -217,6 +224,7 @@ function createApi(bot) {
 
       return await new Promise((resolve, reject) => {
         let timer = null
+        let abortPoll = null
         let reached = false
         const onArrived = () => { reached = true; cleanup(); resolve({ arrived: true, reason: 'goal_reached' }) }
         const onPathStopped = () => {
@@ -238,14 +246,28 @@ function createApi(bot) {
           for (const c of controls) bot.setControlState(c, false)
           resolve({ arrived: false, reason: 'timeout' })
         }
+        const onAbort = () => {
+          cleanup()
+          try { bot.pathfinder.setGoal(null) } catch { /* */ }
+          const controls = ['forward','back','left','right','jump','sprint','sneak']
+          for (const c of controls) bot.setControlState(c, false)
+          resolve({ arrived: false, reason: 'aborted' })
+        }
         const cleanup = () => {
           clearInterval(stuckInterval)
           if (timer) clearTimeout(timer)
+          if (abortPoll) clearInterval(abortPoll)
           bot.off('goal_reached', onArrived)
           bot.off('path_stopped', onPathStopped)
           bot.off('path_update', onPathUpdate)
         }
         timer = setTimeout(onTimeout, timeoutMs)
+        // Poll abort signal at high frequency so long navigations resolve quickly on abort
+        if (abortSignal) {
+          abortPoll = setInterval(() => {
+            if (abortSignal.aborted) onAbort()
+          }, 80)
+        }
         bot.on('goal_reached', onArrived)
         bot.on('path_stopped', onPathStopped)
         bot.on('path_update', onPathUpdate)
@@ -281,7 +303,7 @@ function createApi(bot) {
       return { attacked: target.name || target.kind || target.type, id: target.id }
     },
 
-    collectNearbyDrops: async ({ maxDistance = 5, timeoutMs = 2500, anchorPos = null } = {}) => {
+    collectNearbyDrops: async ({ maxDistance = 5, timeoutMs = 2500, anchorPos = null, abortSignal } = {}) => {
       const origin = bot.entity?.position
       if (!origin) return { collected: 0, reason: 'no_origin' }
       const drops = Object.values(bot.entities || {})
@@ -303,6 +325,7 @@ function createApi(bot) {
       let attemptedAnchor = false
       for (const d of drops) {
         if (Date.now() >= deadline) break
+        if (abortSignal?.aborted) break
         const cur = bot.entity?.position
         if (!cur || !d?.position) continue
         const dist = cur.distanceTo(d.position)

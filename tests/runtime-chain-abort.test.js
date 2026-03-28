@@ -39,8 +39,48 @@ async function testAbortStopsFurtherSteps() {
   assert.ok(out.results.some((r) => r.type === 'external_abort' || String(r.reason || '').includes('abort')))
 }
 
+async function testAbortAwareWaitResolvesFast() {
+  const exec = createChainExecutor()
+  const rc = createChainRunControl()
+  const start = Date.now()
+  const p = exec.run({
+    chain: [{ type: 'wait', timeoutMs: 10000 }],
+    api: {},
+    bot: {},
+    ctx: {},
+    logger: { async log() {} },
+    cycle: 10,
+    runControl: rc,
+  })
+  setTimeout(() => rc.abort('fast_abort'), 50)
+  const out = await p
+  const elapsed = Date.now() - start
+  assert.ok(elapsed < 2000, `wait should resolve fast on abort, took ${elapsed}ms`)
+  assert.strictEqual(out.interrupted, true)
+}
+
+async function testAbortSignalThreadedToNavigateStep() {
+  const exec = createChainExecutor()
+  const rc = createChainRunControl()
+  // Pre-abort before running
+  rc.abort('pre_aborted')
+  const out = await exec.run({
+    chain: [{ type: 'navigate', position: { x: 100, y: 64, z: 100 } }],
+    api: { navigateTo: async () => { throw new Error('should not be called') } },
+    bot: {},
+    ctx: {},
+    logger: { async log() {} },
+    cycle: 11,
+    runControl: rc,
+  })
+  assert.strictEqual(out.interrupted, true)
+  assert.strictEqual(out.completed, 0)
+}
+
 async function run() {
   await testAbortStopsFurtherSteps()
+  await testAbortAwareWaitResolvesFast()
+  await testAbortSignalThreadedToNavigateStep()
   // eslint-disable-next-line no-console
   console.log('runtime chain abort tests passed')
 }
