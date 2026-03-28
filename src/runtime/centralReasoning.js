@@ -517,9 +517,19 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         analyzeBudgetMs,
         'analyze',
       )
-    } catch {
+    } catch (analyzeErr) {
+      const errMsg = analyzeErr?.message || String(analyzeErr)
+      // eslint-disable-next-line no-console
+      console.error(`[centralReasoning] phaseAnalyze FAILED (cycle ${cycle}): ${errMsg}`)
+      if (logger) {
+        await logger.log({
+          type: 'central_analyze_error', cycle,
+          error: errMsg,
+          budgetMs: analyzeBudgetMs,
+        })
+      }
       analysis = {
-        situationAnalysis: 'fast_fallback: analyze timeout',
+        situationAnalysis: `fast_fallback: analyze failed — ${errMsg.slice(0, 120)}`,
         personalityBrief: '',
         selfGoal: 'maintain progress safely',
         severity: 'normal',
@@ -604,7 +614,17 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         decideBudgetMs,
         'decide',
       )
-    } catch {
+    } catch (decideErr) {
+      const errMsg = decideErr?.message || String(decideErr)
+      // eslint-disable-next-line no-console
+      console.error(`[centralReasoning] phaseDecide FAILED (cycle ${cycle}): ${errMsg}`)
+      if (logger) {
+        await logger.log({
+          type: 'central_decide_error', cycle,
+          error: errMsg,
+          budgetMs: decideBudgetMs,
+        })
+      }
       decision = quickFallbackDecision(ctx, analysis)
     }
 

@@ -35,23 +35,24 @@ async function testAllowsWoodWhenGoalMentionsWood() {
 
 async function testUnrecognizedIntentDoesNotForceRecovery() {
   const { buildIntentAwareChain } = require('../src/runtime/planning/intentFallback')
-  // "explore" is now recognized — produces approach action
-  const chain1 = buildIntentAwareChain({ goalText: 'explore the jungle biome', playerTexts: [] })
-  assert.ok(chain1.length > 0, 'explore intent should produce actions')
-  assert.notStrictEqual(chain1[0]?.name, 'recover_from_stuck', 'explore should not trigger recovery')
 
-  // "go to" is now recognized — produces navigation
-  const chain2 = buildIntentAwareChain({ goalText: '', playerTexts: ['go to jungle'] })
-  assert.ok(chain2.length > 0, 'go to intent should produce actions')
+  // "come here" — produces player navigation
+  const chain1 = buildIntentAwareChain({ goalText: '', playerTexts: ['come here'] })
+  assert.ok(chain1.length > 0, 'come here should produce navigate action')
+  assert.strictEqual(chain1[0]?.target, 'nearest_player')
 
-  // "come here" / "follow me" — produces player navigation
-  const chain3 = buildIntentAwareChain({ goalText: '', playerTexts: ['come here'] })
-  assert.ok(chain3.length > 0, 'come here should produce navigate action')
-  assert.strictEqual(chain3[0]?.target, 'nearest_player')
+  // Unrecognized intent returns empty — no false matches on Chinese text
+  const chain2 = buildIntentAwareChain({ goalText: '', playerTexts: ['你是不是没看到树在哪？'] })
+  assert.deepStrictEqual(chain2, [], 'Chinese chat should NOT trigger keyword fallback')
 
-  // Truly unrecognized intent (no keywords at all) still returns empty
-  const chain4 = buildIntentAwareChain({ goalText: 'do something philosophical', playerTexts: [] })
-  assert.deepStrictEqual(chain4, [], 'completely unrecognized should return empty')
+  // "dig stone" matches correctly
+  const chain3 = buildIntentAwareChain({ goalText: 'dig stone', playerTexts: [] })
+  assert.ok(chain3.length > 0, 'dig stone should match')
+  assert.strictEqual(chain3[1]?.args?.block, 'stone')
+
+  // Completely unrecognized English also returns empty
+  const chain4 = buildIntentAwareChain({ goalText: 'explore the jungle biome', playerTexts: [] })
+  assert.deepStrictEqual(chain4, [], 'vague English should return empty, not false-match')
 }
 
 async function run() {
