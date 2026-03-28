@@ -33,10 +33,13 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
   if (!llm) throw new Error('centralReasoning requires a core LLM client')
 
   let lastChainResult = null
-  const centralThinkBudgetMs = Number(process.env.CENTRAL_THINK_BUDGET_MS || 9000)
-  const analyzeBudgetMs = Number(process.env.CENTRAL_ANALYZE_BUDGET_MS || 3500)
-  const decideBudgetMs = Number(process.env.CENTRAL_DECIDE_BUDGET_MS || 3500)
-  const personalityBudgetMs = Number(process.env.CENTRAL_PERSONALITY_BUDGET_MS || 1800)
+  // Budget defaults scale with LLM_TIMEOUT_MS so API calls don't timeout prematurely.
+  // Previous 3500ms defaults caused 100% timeout with real LLM providers.
+  const llmTimeoutMs = Number(process.env.LLM_TIMEOUT_MS || 15000)
+  const centralThinkBudgetMs = Number(process.env.CENTRAL_THINK_BUDGET_MS || Math.max(llmTimeoutMs * 2.5, 25000))
+  const analyzeBudgetMs = Number(process.env.CENTRAL_ANALYZE_BUDGET_MS || Math.max(llmTimeoutMs * 1.1, 12000))
+  const decideBudgetMs = Number(process.env.CENTRAL_DECIDE_BUDGET_MS || Math.max(llmTimeoutMs * 1.1, 12000))
+  const personalityBudgetMs = Number(process.env.CENTRAL_PERSONALITY_BUDGET_MS || Math.max(llmTimeoutMs * 0.5, 5000))
 
   function withBudget(promise, ms, label = 'phase') {
     if (!Number.isFinite(ms) || ms <= 0) return promise

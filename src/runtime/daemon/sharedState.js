@@ -42,6 +42,9 @@ function createSharedState() {
 
     // Player messages (chatListener pushes, runCycle splices)
     playerMessageQueue: [],
+
+    // Connection state (eventReactor sets on disconnect/kick)
+    botDisconnected: false,
   }
 }
 

@@ -24,6 +24,8 @@ function createEventReactor({
 }) {
   let healthListener = null
   let chatListener = null
+  let endListener = null
+  let kickedListener = null
   let reflexTicker = null
   let stuckWatchTicker = null
 
@@ -76,6 +78,37 @@ function createEventReactor({
       } catch { /* chat reaction must not crash daemon */ }
     }
     bot.on('chat', chatListener)
+
+    // Bot disconnect listener — stops daemon loop so it doesn't spin after disconnect
+    endListener = (reason) => {
+      const msg = typeof reason === 'string' ? reason : (reason?.message || String(reason || 'unknown'))
+      shared.botDisconnected = true
+      shared.stopped = true
+      void Promise.resolve(logger.log({
+        type: 'bot_disconnected',
+        cycle: shared.cycleCount,
+        reason: msg,
+        event: 'end',
+      })).catch(() => {})
+      // eslint-disable-next-line no-console
+      console.error(`[daemon] Bot disconnected (end): ${msg}`)
+    }
+    bot.on('end', endListener)
+
+    kickedListener = (reason) => {
+      const msg = typeof reason === 'string' ? reason : (reason?.message || JSON.stringify(reason || 'unknown'))
+      shared.botDisconnected = true
+      shared.stopped = true
+      void Promise.resolve(logger.log({
+        type: 'bot_kicked',
+        cycle: shared.cycleCount,
+        reason: msg,
+        event: 'kicked',
+      })).catch(() => {})
+      // eslint-disable-next-line no-console
+      console.error(`[daemon] Bot kicked: ${msg}`)
+    }
+    bot.on('kicked', kickedListener)
 
     // High-frequency reflex ticker (120ms)
     reflexTicker = setInterval(async () => {
@@ -189,6 +222,8 @@ function createEventReactor({
     if (stuckWatchTicker) { clearInterval(stuckWatchTicker); stuckWatchTicker = null }
     if (healthListener) { bot.off('health', healthListener); healthListener = null }
     if (chatListener) { bot.off('chat', chatListener); chatListener = null }
+    if (endListener) { bot.off('end', endListener); endListener = null }
+    if (kickedListener) { bot.off('kicked', kickedListener); kickedListener = null }
   }
 
   return Object.freeze({ setup, teardown })
