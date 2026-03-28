@@ -291,8 +291,8 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       || null
     // Build available skills list for scheduling-first LLM prompt
     const availableSkills = stableSkills
-      ? [...stableSkills.entries()].map(([name, s]) => ({
-        name,
+      ? (typeof stableSkills.list === 'function' ? stableSkills.list() : []).map((s) => ({
+        name: s.name,
         category: s.category || '',
         description: s.description || '',
         tags: s.tags || [],
