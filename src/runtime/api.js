@@ -154,10 +154,17 @@ function createApi(bot) {
           if (canSee()) break
         }
       }
-      if (!canSee()) {
-        throw new Error(`api.digByName: block not in view after alignment (${blockName})`)
+      // Try to dig even if canSee reports false — bot.dig will throw if truly unreachable.
+      // canSeeBlock is unreliable in many positions (corners, half-slabs, near water).
+      try {
+        await bot.dig(found, 'raycast', 'raycast')
+      } catch (digErr) {
+        // If raycast dig fails, try without raycast as fallback
+        if (!canSee()) {
+          throw new Error(`api.digByName: block not in view after alignment (${blockName})`)
+        }
+        throw digErr
       }
-      await bot.dig(found, 'raycast', 'raycast')
       return { dug: blockName, pos: { x: found.position.x, y: found.position.y, z: found.position.z } }
     },
 

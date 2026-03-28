@@ -128,7 +128,11 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
           ? hardcodedSkillsFactory({ api, bot })
           : createStableSkillRepository({ api, bot })
         const skill = repo?.get?.(skillName)
-        if (!skill) return failOut(new Error(`Unknown hardcoded skill: ${skillName}`), 'unknown_skill_ref', 'invalid')
+        if (!skill) {
+          // Unknown skill — return failure but don't use 'invalid' status so chain can continue
+          // LLM may reference learned/promoted skills that don't exist in stable repo
+          return failOut(new Error(`Unknown skill: ${skillName} (not in stable repo)`), 'unknown_skill_ref')
+        }
         const res = await runSkillWithContract({
           skill,
           api,

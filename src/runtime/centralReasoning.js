@@ -359,6 +359,18 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         playerTexts: (ctx.playerMessages || []).map((m) => String(m.text || '')),
       },
     })
+    // Strip skill_ref steps that reference non-existent skills (LLM may hallucinate learned skill names)
+    if (stableSkills && Array.isArray(decision.actionChain)) {
+      decision.actionChain = decision.actionChain.filter((step) => {
+        if (step.type !== 'skill_ref') return true
+        const exists = stableSkills.get?.(step.name)
+        if (!exists) {
+          // eslint-disable-next-line no-console
+          console.warn(`[centralReasoning] stripped unknown skill_ref: ${step.name}`)
+        }
+        return !!exists
+      })
+    }
     decision.actionChain = applyPersonaPreferenceTieBreak(
       decision.actionChain,
       {

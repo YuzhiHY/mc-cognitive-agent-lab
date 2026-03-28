@@ -184,6 +184,8 @@ function createEventReactor({
         if (!rc || rc.signal.aborted) return
         if (taskSm.getState().state !== 'executing') return
         if (!taskSm.isExecutionLocked()) return
+        // Skip stuck detection while bot is actively digging — zero displacement is normal
+        if (bot.targetDigBlock) return
         const pos = bot.entity?.position
         if (!pos) return
         const now = Date.now()
@@ -192,24 +194,36 @@ function createEventReactor({
           shared.stuckWatchLastAt = now
           return
         }
-        if (now - shared.stuckWatchLastAt < 3800) return
+        // Require longer window (8s) and two consecutive zero-movement samples
+        if (now - shared.stuckWatchLastAt < 8000) return
         const moved = pos.distanceTo(shared.stuckWatchLastPos)
         if (moved < 0.095) {
+          shared.stuckWatchZeroCount = (shared.stuckWatchZeroCount || 0) + 1
+          if (shared.stuckWatchZeroCount < 2) {
+            // First zero sample — record but don't abort yet
+            shared.stuckWatchLastPos = pos.clone()
+            shared.stuckWatchLastAt = now
+            return
+          }
           reflexLayer?.noteStuck?.()
           void Promise.resolve(logger.log({
             type: 'daemon_stuck_evidence',
             cycle: shared.cycleCount,
             moved,
             sampleAgeMs: now - shared.stuckWatchLastAt,
+            consecutiveZero: shared.stuckWatchZeroCount,
             note: 'low_displacement_during_chain',
           })).catch(() => {})
           rc.abort('movement_stuck_timeout')
+          shared.stuckWatchZeroCount = 0
           void Promise.resolve(logger.log({
             type: 'daemon_stuck_abort_chain',
             cycle: shared.cycleCount,
             moved,
             msSinceSample: now - shared.stuckWatchLastAt,
           })).catch(() => {})
+        } else {
+          shared.stuckWatchZeroCount = 0
         }
         shared.stuckWatchLastPos = pos.clone()
         shared.stuckWatchLastAt = now
