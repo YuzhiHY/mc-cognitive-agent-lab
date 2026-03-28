@@ -79,9 +79,27 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
           nextGoalHint: `intent_skill_${selected.name}`,
         }
       }
-      // Intent exists but no keyword/skill matched — do NOT force recovery.
-      // Return null to signal caller should invoke full LLM planning instead.
-      return null
+      // Intent exists but no keyword/skill matched — advance with best available action.
+      // Navigate toward player or gather nearby resource, don't idle or force recovery.
+      const blocks = ctx?.snapshot?.nearby?.blocks || []
+      const hasOak = blocks.some((bl) => String(bl.name || '').toLowerCase() === 'oak_log')
+      if (hasOak) {
+        return {
+          thought: `fast_fallback: intent unrecognized, advancing with nearby resource gather`,
+          actionChain: [
+            { type: 'skill_ref', name: 'approach_target', args: { target: 'oak_log', sprint: true } },
+            { type: 'skill_ref', name: 'mine_named_block', args: { block: 'oak_log', maxDistance: 22 } },
+          ],
+          memoryUpdates: [],
+          nextGoalHint: 'intent_unrecognized_gather',
+        }
+      }
+      return {
+        thought: `fast_fallback: intent unrecognized, approaching player for context`,
+        actionChain: [{ type: 'navigate', target: 'nearest_player', sprint: true }],
+        memoryUpdates: [],
+        nextGoalHint: 'intent_unrecognized_approach',
+      }
     }
     const blocks = ctx?.snapshot?.nearby?.blocks || []
     const hasOak = blocks.some((b) => String(b.name || '').toLowerCase() === 'oak_log')
@@ -585,21 +603,6 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       )
     } catch {
       decision = quickFallbackDecision(ctx, analysis)
-      // quickFallbackDecision returns null when intent exists but no pattern matched —
-      // use a minimal safe fallback that does not force recovery or idle.
-      if (!decision) {
-        const texts = (ctx?.playerMessages || []).map((m) => String(m.text || ''))
-        const g = String(ctx?.runtimeDirectives?.primaryGoal || analysis?.selfGoal || '')
-        decision = {
-          thought: `fast_fallback: unrecognized intent, acknowledging — "${g || texts[0] || '?'}"`,
-          actionChain: [
-            { type: 'chat', message: `我收到了指令，但需要更多时间规划。` },
-            { type: 'wait', timeoutMs: 800 },
-          ],
-          memoryUpdates: [],
-          nextGoalHint: 'intent_pending_llm',
-        }
-      }
     }
 
     try {

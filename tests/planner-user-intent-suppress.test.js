@@ -34,14 +34,24 @@ async function testAllowsWoodWhenGoalMentionsWood() {
 }
 
 async function testUnrecognizedIntentDoesNotForceRecovery() {
-  // Simulate quickFallbackDecision path:
-  // buildIntentAwareChain returns [] for unrecognized intent
   const { buildIntentAwareChain } = require('../src/runtime/planning/intentFallback')
-  const chain = buildIntentAwareChain({ goalText: 'explore the jungle biome', playerTexts: ['go to jungle'] })
-  // Intent doesn't match any keyword — should return empty array
-  assert.deepStrictEqual(chain, [], 'unrecognized intent should return empty from buildIntentAwareChain')
-  // The centralReasoning quickFallbackDecision now returns null for this case
-  // instead of forcing recover_from_stuck — verify the contract
+  // "explore" is now recognized — produces approach action
+  const chain1 = buildIntentAwareChain({ goalText: 'explore the jungle biome', playerTexts: [] })
+  assert.ok(chain1.length > 0, 'explore intent should produce actions')
+  assert.notStrictEqual(chain1[0]?.name, 'recover_from_stuck', 'explore should not trigger recovery')
+
+  // "go to" is now recognized — produces navigation
+  const chain2 = buildIntentAwareChain({ goalText: '', playerTexts: ['go to jungle'] })
+  assert.ok(chain2.length > 0, 'go to intent should produce actions')
+
+  // "come here" / "follow me" — produces player navigation
+  const chain3 = buildIntentAwareChain({ goalText: '', playerTexts: ['come here'] })
+  assert.ok(chain3.length > 0, 'come here should produce navigate action')
+  assert.strictEqual(chain3[0]?.target, 'nearest_player')
+
+  // Truly unrecognized intent (no keywords at all) still returns empty
+  const chain4 = buildIntentAwareChain({ goalText: 'do something philosophical', playerTexts: [] })
+  assert.deepStrictEqual(chain4, [], 'completely unrecognized should return empty')
 }
 
 async function run() {
