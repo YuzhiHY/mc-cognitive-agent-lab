@@ -87,9 +87,17 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '玩家的话必须被认真对待。玩家指出的问题、命令、建议必须在 selfGoal 中体现。',
       '玩家表达异议 = 你当前的策略需要被重新审视。绝不可忽视或认为玩家在开玩笑。',
       '',
+      '## 失败适应',
+      '如果输入中有 failureContext 字段，说明最近多轮连续失败。',
+      '- failureContext 提供事实数据：连续失败次数、主要失败原因、失败率。',
+      '- failureContext.urgency === "high" 时：你必须在 selfGoal 中明确提出与之前完全不同的策略。',
+      '- 连续 3 次以上相同失败 = 你正在做无用功。禁止再输出相同的目标/方案。',
+      '- 你需要自主判断替代策略。可能的方向包括但不限于：换目标、探索新区域、尝试不同路径、利用附近资源等。',
+      '- 策略选择应基于你对当前环境的分析和你自身的判断，而非固定套路。',
+      '',
       '## 输入',
       '你将收到：snapshot（环境感知）、memory（持久记忆）、lastChainResult（上一轮执行结果）、cycle（轮次）。',
-      '可能还有 playerMessages（玩家在上一轮说的话，数组）。',
+      '可能还有 playerMessages（玩家在上一轮说的话，数组）和 failureContext（连续失败上下文）。',
       'snapshot.status.recentDamageMs 表示最近一次受伤距离现在的毫秒数（越小越危险）。',
       '',
       '## 任务',
@@ -164,7 +172,9 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '- 在导航到目标方块之前不要直接 dig，因为方块可能不在手臂范围内。正确顺序：先 navigate 再 dig。',
       '- attack 的 target 必须是 snapshot.nearby.entities 中存在的实体名。',
       '- 如果分析阶段报告了上一轮失败，不要重复同样的动作链。必须改变策略。',
+      '- **反复失败 = 必须换方案**：如果 analysis 中提到连续失败或 failureContext.urgency 为 high，你绝不能输出与之前相同或类似的 actionChain。必须尝试完全不同的方法。',
       '- 如果玩家在 analysis 中有消息，优先执行玩家的指示。',
+      '- 附近有玩家时，"接近玩家"是可选策略之一，但不是默认选择。你应根据当前状态、目标和自身判断来权衡所有选项。',
       '- 若 threat_level 为 low/high，优先输出战斗/规避动作，不要输出闲聊动作。',
       '- 必须先检查库存（snapshot.inventory.summary 与 inventoryGate）。如果所需物品已存在，优先 equip/use；不存在才考虑 craft 或 gather。',
       '- 对 craft 行动要先想清楚材料链：缺什么 -> 如何获得（递归拆解），再输出动作链。',
@@ -229,6 +239,8 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '吃东西：[equip food_item] → [skill eat code]',
       '挖石头（需要稿子）：[equip wooden_pickaxe] → [navigate nearest_stone] → [dig stone]',
       '练习工作台习惯：[place crafting_table] → [dig crafting_table]',
+      '跟随/靠近玩家：[navigate target=nearest_player sprint=true]（当需要跟随玩家引导、求助、或合作时使用）',
+      '反复失败时：停止重复同样的失败动作，改为 navigate 到玩家、探索新方向、或先完成其他可行目标',
       '',
       '返回严格 JSON（不要 markdown 围栏）：',
       '{',
@@ -267,10 +279,13 @@ function buildPersonalityExpectationPayload({
   })
 }
 
-function buildCentralAnalyzePayload({ snapshot, memory, lastChainResult, cycle, playerMessages }) {
+function buildCentralAnalyzePayload({ snapshot, memory, lastChainResult, failureContext, cycle, playerMessages }) {
   const payload = { snapshot, memory, lastChainResult, cycle }
   if (playerMessages && playerMessages.length > 0) {
     payload.playerMessages = playerMessages
+  }
+  if (failureContext) {
+    payload.failureContext = failureContext
   }
   return JSON.stringify(payload)
 }
@@ -285,8 +300,9 @@ function buildCentralDecidePayload({
   learnTaskQueue,
   rankedGoals,
   availableSkills,
+  failureContext,
 }) {
-  return JSON.stringify({
+  const payload = {
     analysis,
     personalityFeedback,
     personaPreferenceProfile: personaPreferenceProfile || null,
@@ -296,7 +312,11 @@ function buildCentralDecidePayload({
     learnTaskQueue: learnTaskQueue || [],
     rankedGoals: rankedGoals || [],
     availableSkills: availableSkills || [],
-  })
+  }
+  if (failureContext) {
+    payload.failureContext = failureContext
+  }
+  return JSON.stringify(payload)
 }
 
 function buildCentralLearnEvalPayload({

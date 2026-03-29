@@ -44,9 +44,12 @@ function createChainOrchestrator({
       goal: shared.activeTask?.goal || null,
     })
 
+    // Thinking indicator — let the player know the bot is processing
+    try { bot.chat('思考中...') } catch { /* non-critical */ }
+
     const decision = await centralReasoning.think({
       ctx,
-      bot,
+      refreshSnapshot: () => sense(bot, { radius: 5 }),
       memory,
       personality,
       logger,
@@ -134,17 +137,29 @@ function createChainOrchestrator({
           runControl: shared.currentChainRunControl,
         })
       } catch (err) {
+        const errStack = err?.stack?.split('\n').slice(0, 5).join('\n') || null
         chainResult = {
           completed: 0,
           total: decision.actionChain.length,
           interrupted: false,
-          failedStep: { index: 0, type: 'chain', error: { message: err?.message || String(err) } },
+          failedStep: {
+            index: 0, type: 'chain', status: 'failure',
+            error: { message: err?.message || String(err), stack: errStack },
+          },
           results: [],
         }
         shared.metrics.errorCount += 1
+        void Promise.resolve(logger.log({
+          type: 'chain_executor_crash',
+          cycle: cycleCount,
+          error: err?.message || String(err),
+          stack: errStack,
+          chainSignature,
+        })).catch(() => {})
       } finally {
         shared.currentChainRunControl = null
         shared.stuckWatchLastPos = null
+        shared.stuckWatchZeroCount = 0
       }
 
       await logger.log({
@@ -231,8 +246,13 @@ function createChainOrchestrator({
               strategyBias: profile.strategyBias,
             })
           }
-        } catch {
-          // preference feedback is optional and must never break loop
+        } catch (err) {
+          // preference feedback is optional — log but never break loop
+          void Promise.resolve(logger.log({
+            type: 'persona_preference_error',
+            cycle: cycleCount,
+            error: err?.message || String(err),
+          })).catch(() => {})
         }
       }
 
@@ -247,16 +267,15 @@ function createChainOrchestrator({
         chainSignature,
       })
       if (!success) {
+        // Log failure evidence for perception — but do NOT auto-transition to 'recovering'.
+        // Per CLAUDE.md: failure triggers reassessment by the planner in the next cycle,
+        // not a hardcoded state change. The 'failed' state (set above) is sufficient;
+        // the planner will see the failure fingerprint and decide the response.
+        const failedStatus = chainResult?.failedStep?.status
         const failedMsg = String(chainResult?.failedStep?.error?.message || '').toLowerCase()
-        if (failedMsg.includes('stuck') || failedMsg.includes('no path') || failedMsg.includes('path')) {
+        if (failedStatus === 'timeout' || /path|stuck|no path|movement/i.test(failedMsg)) {
           reflexLayer?.noteStuck?.()
         }
-        await setTaskState('recovering', {
-          reason: 'post_failure_recover',
-          cycle: cycleCount,
-          goal: decision?.nextGoalHint || null,
-          chainSignature,
-        })
       }
       shared.currentExecutionMeta = null
       shared.currentSkillMeta = null

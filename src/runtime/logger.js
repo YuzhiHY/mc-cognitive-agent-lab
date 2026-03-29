@@ -15,6 +15,24 @@ function safeJsonLine(x) {
   }
 }
 
+/**
+ * Serialize an error into a plain object preserving stack, name, code.
+ * Safe to call with non-Error values.
+ */
+function serializeError(err) {
+  if (!err) return { message: 'unknown_error' }
+  if (typeof err === 'string') return { message: err }
+  const out = { message: err.message || String(err) }
+  if (err.name) out.name = err.name
+  if (err.code) out.code = err.code
+  if (err.stack) {
+    // Keep first 5 stack frames to stay compact
+    const lines = err.stack.split('\n')
+    out.stack = lines.slice(0, 6).join('\n')
+  }
+  return out
+}
+
 function createJsonlLogger({ enabled, dir, taskId, filePrefix = 'agent' }) {
   const isEnabled = toBool(enabled, true)
   if (!isEnabled) {
@@ -88,5 +106,5 @@ function createJsonlLogger({ enabled, dir, taskId, filePrefix = 'agent' }) {
   })
 }
 
-module.exports = { createJsonlLogger }
+module.exports = { createJsonlLogger, serializeError }
 

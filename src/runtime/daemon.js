@@ -17,7 +17,7 @@
 
 const { sense, senseTiered, nearestHostileDistance } = require('./sense')
 const { createApi } = require('./api')
-const { createJsonlLogger } = require('./logger')
+const { createJsonlLogger, serializeError } = require('./logger')
 const { buildMemoryHint } = require('./memoryHint')
 const { createPersonality } = require('./personality')
 const { createTaskStateMachine } = require('./taskStateMachine')
@@ -39,6 +39,7 @@ const { createInterruptExecutor } = require('./daemon/interruptExecutor')
 const { createChainOrchestrator } = require('./daemon/chainOrchestrator')
 const { createVoiceController } = require('./daemon/voiceController')
 const { createEventReactor } = require('./daemon/eventReactor')
+const { logCycleSummary } = require('./daemon/cycleLogger')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -276,17 +277,18 @@ function createDaemon({
         taskSm.setExecutionLock(false, 'reasoning_error')
         shared.currentExecutionMeta = null
         shared.currentSkillMeta = null
+        const errDetail = serializeError(err)
         await setTaskState('failed', {
           reason: 'reasoning_error',
-          error: err.message || String(err),
+          error: errDetail.message,
           cycle: shared.cycleCount,
         })
         await logger.log({
           type: 'daemon_reasoning_error',
           cycle: shared.cycleCount,
-          error: err.message || String(err),
+          error: errDetail,
         })
-        return { type: 'error', error: err.message, elapsedMs: Date.now() - cycleStart }
+        return { type: 'error', error: errDetail.message, elapsedMs: Date.now() - cycleStart }
       }
     }
 
@@ -389,10 +391,36 @@ function createDaemon({
               type: 'daemon_cycle', cycle: shared.cycleCount, ...result,
             }))
           }
+          if (result.type === 'error') {
+            // eslint-disable-next-line no-console
+            console.error(`[daemon] cycle ${shared.cycleCount} returned error: ${result.error}`)
+          }
+          // Cycle summary for debug output (AGENT_DEBUG=1)
+          const liveSnap = sense(bot, { radius: 5, farScan: false })
+          await logCycleSummary(logger, {
+            cycleId: shared.cycleCount,
+            state: taskSm.getState().state,
+            goal: shared.activeTask?.goal || null,
+            chosenSkill: shared.currentExecutionMeta?.skillName || null,
+            resultStatus: result.type,
+            reflexTriggered: result.type === 'reflex',
+            interruptReason: result.type === 'executing_hold' ? 'hold' : null,
+            planningInvoked: result.type === 'reasoning',
+            durationMs: result.elapsedMs || null,
+            threat: liveSnap?.threat_level || null,
+            health: liveSnap?.status?.health ?? null,
+            error: result.error || null,
+          })
         }
       } catch (err) {
+        const errDetail = serializeError(err)
         // eslint-disable-next-line no-console
-        console.error(`[daemon] cycle ${shared.cycleCount} error:`, err.message)
+        console.error(`[daemon] cycle ${shared.cycleCount} error:`, errDetail.message, errDetail.stack || '')
+        void Promise.resolve(logger.log({
+          type: 'daemon_cycle_error',
+          cycle: shared.cycleCount,
+          error: errDetail,
+        })).catch(() => {})
       }
 
       // Adaptive polling

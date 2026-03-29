@@ -25,6 +25,7 @@ function buildCycleSummary({
   threat,
   health,
   chainSignature,
+  error,
 }) {
   return Object.freeze({
     type: 'cycle_summary',
@@ -43,6 +44,7 @@ function buildCycleSummary({
     threat: threat || null,
     health: typeof health === 'number' ? health : null,
     chainSignature: chainSignature || null,
+    error: error || null,
   })
 }
 
@@ -63,6 +65,8 @@ function debugPrint(summary) {
   if (summary.threat && summary.threat !== 'none') parts.push(`threat=${summary.threat}`)
   if (summary.health !== null) parts.push(`hp=${summary.health}`)
   if (summary.durationMs !== null) parts.push(`${summary.durationMs}ms`)
+  if (summary.error) parts.push(`ERR=${summary.error}`)
+  if (summary.chainSignature) parts.push(`chain=${summary.chainSignature}`)
   // eslint-disable-next-line no-console
   console.log(`[AGENT] ${parts.join(' | ')}`)
 }

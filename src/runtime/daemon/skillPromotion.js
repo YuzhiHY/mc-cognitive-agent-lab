@@ -64,7 +64,7 @@ function synthesizeSkillCodeFromChain(chain, skillNameHint = 'auto_chain_skill')
     ...lines.map((x) => `    ${x}`),
     '    return { done: true, learned: true }',
     '  } catch (err) {',
-    '    return { done: false, error: err?.message || String(err) }',
+    '    return { done: false, failureClass: "chain_step_failed", reason: err?.message || String(err), retryable: true }',
     '  }',
     '}',
     '',

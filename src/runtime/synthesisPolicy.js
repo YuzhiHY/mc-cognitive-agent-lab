@@ -29,9 +29,13 @@ function canSynthesize({ plannerMeta, snapshot, stableSkills } = {}) {
 
   // Check if a stable skill could serve instead
   const goal = plannerMeta.goal || plannerMeta.thought || ''
-  if (stableSkills && stableSkills.size > 0) {
-    for (const [name] of stableSkills) {
-      if (goal.toLowerCase().includes(name.replace(/_/g, ' '))) {
+  const skillList = typeof stableSkills?.list === 'function'
+    ? stableSkills.list()
+    : (stableSkills instanceof Map ? [...stableSkills.keys()].map((n) => ({ name: n })) : [])
+  if (skillList.length > 0) {
+    for (const skill of skillList) {
+      const name = typeof skill === 'string' ? skill : (skill?.name || '')
+      if (name && goal.toLowerCase().includes(name.replace(/_/g, ' '))) {
         return {
           allowed: false,
           reason: `stable_skill_available: ${name}`,

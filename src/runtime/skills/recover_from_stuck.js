@@ -1,4 +1,5 @@
 const { okSkill, failSkill } = require('./_helpers')
+const { feel } = require('../feeler')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -31,13 +32,19 @@ module.exports = Object.freeze({
         strategies.push('controls_cleared')
       } catch { /* */ }
 
-      // Strategy 3: Clear obstacle in front
+      // Strategy 3: Feeler-based micro-compensation (movement-first)
+      try {
+        const feelerResult = await feel(bot, null, { allowDig: true })
+        if (feelerResult.compensated) strategies.push(`feeler_${feelerResult.action}`)
+      } catch { /* */ }
+
+      // Strategy 4: Legacy obstacle clear (dig-based fallback)
       try {
         const out = await api.executeAction('recoverFromStuck', {})
         if (out?.status === 'success') strategies.push('obstacle_cleared')
       } catch { /* */ }
 
-      // Strategy 4: Random direction walk to escape collision
+      // Strategy 5: Random direction walk to escape collision
       try {
         const angle = Math.random() * Math.PI * 2
         await bot.look(angle, 0, true)

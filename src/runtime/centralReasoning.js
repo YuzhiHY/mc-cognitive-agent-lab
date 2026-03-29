@@ -4,7 +4,7 @@ const {
   buildCentralDecidePayload,
   buildCentralLearnEvalPayload,
 } = require('./llm/prompt')
-const { sense } = require('./sense')
+// sense is no longer imported here — snapshot refresh is injected via refreshSnapshot callback
 const {
   getQueue,
   saveQueue,
@@ -13,6 +13,50 @@ const {
   compactChainResults,
   appendHabit,
 } = require('./learnTasks')
+
+/**
+ * Curate memory for the LLM planner — semantic tier mediation.
+ * Instead of dumping raw memory.getAll() to the LLM, extract only
+ * knowledge-relevant entries and compact them for token efficiency.
+ */
+function curateMemoryForPlanner(memory, ctx) {
+  if (!memory) return {}
+  const all = memory.getAll()
+  const curated = {}
+
+  // Extract knowledge entries (the ones the LLM actually uses)
+  for (const [key, value] of Object.entries(all)) {
+    if (key.startsWith('knowledge:')) {
+      curated[key] = value
+    }
+    if (key.startsWith('learned:')) {
+      // Only include non-promoted learned patterns (promoted are in stable skills)
+      if (value && !value.promoted) {
+        curated[key] = {
+          signature: value.signature,
+          successCount: value.successCount,
+          failCount: value.failCount,
+        }
+      }
+    }
+    if (key.startsWith('skill:')) {
+      curated[key] = { skillName: value?.skillName, source: value?.source }
+    }
+  }
+
+  // Include memory hints from failure fingerprints (already in ctx)
+  if (ctx?.memory_hint) {
+    curated._memory_hints = ctx.memory_hint
+  }
+
+  // Include habits
+  const habits = all['learn:habits']
+  if (habits) {
+    curated['learn:habits'] = habits
+  }
+
+  return curated
+}
 const { chooseHardcodedSkill } = require('./planning/skillSelector')
 const { compileActionChain } = require('./planning/chainCompiler')
 const { buildIntentAwareChain, shouldSuppressAutoWood } = require('./planning/intentFallback')
@@ -33,6 +77,9 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
   if (!llm) throw new Error('centralReasoning requires a core LLM client')
 
   let lastChainResult = null
+  // Rolling window of recent chain outcomes for failure pattern detection
+  const recentOutcomes = []
+  const MAX_RECENT_OUTCOMES = 6
   // Budget defaults scale with LLM_TIMEOUT_MS so API calls don't timeout prematurely.
   // Previous 3500ms defaults caused 100% timeout with real LLM providers.
   const llmTimeoutMs = Number(process.env.LLM_TIMEOUT_MS || 15000)
@@ -82,26 +129,13 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
           nextGoalHint: `intent_skill_${selected.name}`,
         }
       }
-      // Intent exists but no keyword/skill matched — advance with best available action.
-      // Navigate toward player or gather nearby resource, don't idle or force recovery.
-      const blocks = ctx?.snapshot?.nearby?.blocks || []
-      const hasOak = blocks.some((bl) => String(bl.name || '').toLowerCase() === 'oak_log')
-      if (hasOak) {
-        return {
-          thought: `fast_fallback: intent unrecognized, advancing with nearby resource gather`,
-          actionChain: [
-            { type: 'skill_ref', name: 'approach_target', args: { target: 'oak_log', sprint: true } },
-            { type: 'skill_ref', name: 'mine_named_block', args: { block: 'oak_log', maxDistance: 22 } },
-          ],
-          memoryUpdates: [],
-          nextGoalHint: 'intent_unrecognized_gather',
-        }
-      }
+      // Intent exists but LLM failed — safe idle, let next cycle retry LLM.
+      // No hardcoded behavioral choice here; decisions belong to the planner.
       return {
-        thought: `fast_fallback: intent unrecognized, approaching player for context`,
-        actionChain: [{ type: 'navigate', target: 'nearest_player', sprint: true }],
+        thought: 'fast_fallback: intent present but LLM unavailable, safe idle until next cycle',
+        actionChain: [{ type: 'wait', timeoutMs: 800 }],
         memoryUpdates: [],
-        nextGoalHint: 'intent_unrecognized_approach',
+        nextGoalHint: 'await_llm_retry',
       }
     }
     const blocks = ctx?.snapshot?.nearby?.blocks || []
@@ -196,14 +230,59 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
 
   function setLastChainResult(result) {
     lastChainResult = result
+    if (result) {
+      const failed = !!result.failedStep
+      const summary = {
+        cycle: Date.now(),
+        completed: result.completed,
+        total: result.total,
+        failed,
+        failReason: result.failedStep?.error?.message || null,
+        failType: result.failedStep?.type || null,
+      }
+      recentOutcomes.push(summary)
+      if (recentOutcomes.length > MAX_RECENT_OUTCOMES) recentOutcomes.shift()
+    }
+  }
+
+  /**
+   * Build a concise failure streak summary for the LLM.
+   * If recent cycles show a pattern of repeated failures, produce a strong signal.
+   */
+  function buildFailureContext() {
+    if (recentOutcomes.length < 2) return null
+    const failures = recentOutcomes.filter((o) => o.failed)
+    if (failures.length < 2) return null
+
+    // Group by failReason
+    const reasonCounts = {}
+    for (const f of failures) {
+      const key = f.failReason || 'unknown'
+      reasonCounts[key] = (reasonCounts[key] || 0) + 1
+    }
+
+    const dominant = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1])[0]
+    const streak = failures.length
+    const total = recentOutcomes.length
+
+    // Facts only — no behavioral recommendation. The LLM planner decides strategy.
+    return {
+      consecutiveOrRecentFailures: streak,
+      totalRecentCycles: total,
+      dominantFailure: { reason: dominant[0], count: dominant[1] },
+      allReasons: reasonCounts,
+      urgency: streak >= 3 ? 'high' : 'medium',
+    }
   }
 
   async function phaseAnalyze({ ctx, memory, cycle }) {
     const systemPrompt = buildSystemPrompt({ mode: 'central_analyze' })
+    const failureContext = buildFailureContext()
     const userPayload = buildCentralAnalyzePayload({
       snapshot: ctx.snapshot,
-      memory: memory ? memory.getAll() : {},
+      memory: curateMemoryForPlanner(memory, ctx),
       lastChainResult,
+      failureContext,
       cycle,
       playerMessages: ctx.playerMessages || undefined,
     })
@@ -299,6 +378,7 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       }))
       : []
 
+    const failureCtx = buildFailureContext()
     const userPayload = buildCentralDecidePayload({
       analysis: {
         situationAnalysis: analysis.situationAnalysis,
@@ -313,11 +393,12 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       },
       personaPreferenceProfile,
       snapshot: ctx.snapshot,
-      memory: memory ? memory.getAll() : {},
+      memory: curateMemoryForPlanner(memory, ctx),
       inventoryGate: gate,
       learnTaskQueue,
       rankedGoals: analysis.rankedGoals || [],
       availableSkills,
+      failureContext: failureCtx,
     })
 
     const result = await llm.plan({
@@ -387,7 +468,7 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       const policy = canSynthesize({
         plannerMeta,
         snapshot: ctx.snapshot,
-        stableSkills: stableSkills || new Map(),
+        stableSkills: stableSkills || null,
       })
       decision._synthesisPolicy = policy
       if (!policy.allowed) {
@@ -519,7 +600,7 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     }
   }
 
-  async function think({ ctx, bot, memory, personality, logger, cycle }) {
+  async function think({ ctx, refreshSnapshot, memory, personality, logger, cycle }) {
     // Phase 1: Analyze & Translate
     const thinkStart = Date.now()
     let analysis
@@ -607,8 +688,8 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
 
     // Refresh snapshot before decide — LLM calls above may have taken seconds,
     // entities/blocks could have changed (creeper exploded, mob despawned, etc.)
-    if (bot) {
-      const freshSnapshot = sense(bot, { radius: 5 })
+    if (typeof refreshSnapshot === 'function') {
+      const freshSnapshot = refreshSnapshot()
       ctx = { ...ctx, snapshot: freshSnapshot }
     }
 

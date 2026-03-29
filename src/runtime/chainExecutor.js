@@ -604,7 +604,7 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
 
       const policy = validateStepPolicy(step)
       if (!policy.ok) {
-        failedStep = { index: i, type: step.type, error: { message: policy.message } }
+        failedStep = { index: i, type: step.type, status: 'invalid', error: { message: policy.message } }
         const ir = invalidResult({
           source: 'chain',
           actionType: step.type,
@@ -671,6 +671,7 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
         failedStep = {
           index: i,
           type: step.type,
+          status: stepResult.status || 'failure',
           error: stepResult.error || { message: stepResult.errorMessage || stepResult.reason || 'step_failed' },
         }
         break

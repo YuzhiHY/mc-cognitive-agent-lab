@@ -41,15 +41,58 @@ function isStablePlacementGround(block) {
   return true
 }
 
+/**
+ * Auto-craft planks from logs if needed.
+ * Planks are a 2x2 recipe (no crafting table required).
+ */
+async function ensurePlanks(bot, mcData, minCount = 4) {
+  const planks = bot.inventory.items().find((i) => i.name.endsWith('_planks'))
+  if (planks && planks.count >= minCount) return true
+  // Try to craft planks from any available log
+  const logTypes = [
+    'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log',
+    'mangrove_log', 'cherry_log', 'crimson_stem', 'warped_stem',
+    'stripped_oak_log', 'stripped_birch_log', 'stripped_spruce_log',
+    'stripped_jungle_log', 'stripped_acacia_log', 'stripped_dark_oak_log',
+  ]
+  const plankVariants = [
+    'oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks',
+    'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks',
+    'crimson_planks', 'warped_planks',
+  ]
+  for (const logName of logTypes) {
+    const log = bot.inventory.items().find((i) => i.name === logName)
+    if (!log || log.count < 1) continue
+    // Find which plank this log produces
+    const plankPrefix = logName.replace(/_log$/, '').replace(/^stripped_/, '').replace(/_stem$/, '')
+    const plankName = plankVariants.find((p) => p.startsWith(plankPrefix)) || 'oak_planks'
+    const plankItem = mcData.itemsByName[plankName]
+    if (!plankItem) continue
+    const recipe = bot.recipesFor(plankItem.id, null, 1, null)[0]
+    if (!recipe) continue
+    // Craft enough planks (each log -> 4 planks)
+    const needed = Math.ceil(minCount / 4)
+    const canCraft = Math.min(needed, log.count)
+    await bot.craft(recipe, canCraft, null)
+    const after = bot.inventory.items().find((i) => i.name.endsWith('_planks'))
+    if (after && after.count >= minCount) return true
+  }
+  return false
+}
+
 async function ensureCraftingTable(bot, mcData) {
   const tableType = mcData.blocksByName.crafting_table
   if (!tableType) return null
   let table = bot.findBlock({ matching: tableType.id, maxDistance: 4 })
   if (table) return table
 
+  // Auto-craft planks from logs if we don't have enough
   const planksInInv = bot.inventory.items().find((i) => i.name.endsWith('_planks'))
   if (!planksInInv || planksInInv.count < 4) {
-    throw new Error('skillOps.smartCraft: need crafting table but not enough planks')
+    const crafted = await ensurePlanks(bot, mcData, 4)
+    if (!crafted) {
+      throw new Error('skillOps.smartCraft: need crafting table but no planks or logs available')
+    }
   }
   const tableItem = mcData.itemsByName.crafting_table
   if (!tableItem) return null
@@ -74,6 +117,52 @@ async function ensureCraftingTable(bot, mcData) {
     } catch { /* try next */ }
   }
   throw new Error('skillOps.smartCraft: crafted crafting_table but failed to place')
+}
+
+/**
+ * Try to auto-craft missing ingredients for a recipe using only 2x2 (no table) crafting.
+ * Handles the common chain: logs → planks → sticks, etc.
+ * Returns true if any ingredients were crafted.
+ */
+async function tryAutoCraftIngredients(bot, mcData, targetItem, count) {
+  let crafted = false
+  // Check all recipes for the target to find what ingredients are needed
+  const recipes = bot.recipesFor(targetItem.id, null, count, null)
+  const tableBlock = bot.findBlock({ matching: mcData.blocksByName.crafting_table?.id, maxDistance: 4 })
+  const tableRecipes = bot.recipesFor(targetItem.id, null, count, tableBlock || undefined)
+  const allRecipes = [...recipes, ...tableRecipes]
+
+  for (const recipe of allRecipes) {
+    if (!recipe?.delta) continue
+    // delta has negative values for consumed items, positive for produced
+    for (const delta of recipe.delta) {
+      if (delta.count >= 0) continue // produced, not consumed
+      const ingredient = mcData.items[delta.id]
+      if (!ingredient) continue
+      const inInv = bot.inventory.items().find((i) => i.type === delta.id)
+      const have = inInv?.count || 0
+      const need = Math.abs(delta.count) * count
+      if (have >= need) continue
+
+      // Try to auto-craft this ingredient without a crafting table
+      if (ingredient.name.endsWith('_planks')) {
+        const ok = await ensurePlanks(bot, mcData, need)
+        if (ok) crafted = true
+      } else if (ingredient.name === 'stick') {
+        // Sticks need planks, planks need logs — chain craft
+        await ensurePlanks(bot, mcData, 2)
+        const stickItem = mcData.itemsByName.stick
+        if (stickItem) {
+          const stickRecipe = bot.recipesFor(stickItem.id, null, Math.ceil(need / 4), null)[0]
+          if (stickRecipe) {
+            await bot.craft(stickRecipe, Math.ceil(need / 4), null)
+            crafted = true
+          }
+        }
+      }
+    }
+  }
+  return crafted
 }
 
 async function ensurePlacedUtilityBlock(bot, mcData, blockName) {
@@ -165,6 +254,8 @@ function createStableSkillOps(bot) {
       const mcData = require('minecraft-data')(bot.version)
       const item = mcData.itemsByName[itemName]
       if (!item) throw new Error(`skillOps.smartCraft: unknown item '${itemName}'`)
+
+      // Phase 1: Try planCraft (handles full dependency chains automatically)
       if (typeof bot.planCraft === 'function') {
         const plan = bot.planCraft(item.id, count)
         if (plan.success) {
@@ -176,11 +267,27 @@ function createStableSkillOps(bot) {
           return { crafted: itemName, count, steps: plan.recipesToDo.length }
         }
       }
+
+      // Phase 2: Try 2x2 inventory recipe (no crafting table needed)
       const invRecipe = bot.recipesFor(item.id, null, count, null)[0]
       if (invRecipe) {
         await bot.craft(invRecipe, count, null)
         return { crafted: itemName, count, mode: 'inv_recipe' }
       }
+
+      // Phase 3: For items whose ingredients can be auto-crafted from raw materials,
+      // try crafting the ingredients first (e.g., sticks need planks, planks need logs)
+      const autoCraftable = await tryAutoCraftIngredients(bot, mcData, item, count)
+      if (autoCraftable) {
+        // Retry inventory recipe after crafting ingredients
+        const retryInv = bot.recipesFor(item.id, null, count, null)[0]
+        if (retryInv) {
+          await bot.craft(retryInv, count, null)
+          return { crafted: itemName, count, mode: 'inv_after_autocraft' }
+        }
+      }
+
+      // Phase 4: Need a crafting table for 3x3 recipes
       const table = await ensureCraftingTable(bot, mcData)
       const tableRecipe = bot.recipesFor(item.id, null, count, table)[0]
       if (tableRecipe) {

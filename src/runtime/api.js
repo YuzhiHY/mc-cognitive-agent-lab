@@ -1,5 +1,6 @@
 const { Vec3 } = require('vec3')
 const { clearObstacleInFront } = require('./obstacleNav')
+const { feel } = require('./feeler')
 const { createStableSkillOps } = require('./skills/stableSkillOps')
 const {
   successResult,
@@ -211,6 +212,7 @@ function createApi(bot) {
 
       let stuckChecks = 0
       let lastCheckPos = bot.entity?.position?.clone()
+      const navTarget = pos // capture for feeler
 
       const stuckInterval = setInterval(async () => {
         if (bot.targetDigBlock) return
@@ -220,14 +222,22 @@ function createApi(bot) {
         lastCheckPos = curPos.clone()
         if (moved < 0.3) {
           stuckChecks++
-          if (stuckChecks >= 2) {
-            try { await clearObstacleInFront(bot) } catch { /* */ }
-            stuckChecks = 0
+          if (stuckChecks >= 1) {
+            // Phase 1: feeler — movement-first compensation
+            try {
+              const result = await feel(bot, navTarget, { allowDig: stuckChecks >= 3 })
+              if (result.compensated) { stuckChecks = Math.max(0, stuckChecks - 1); return }
+            } catch { /* */ }
+            // Phase 2: legacy obstacle clearing (only after feeler fails twice)
+            if (stuckChecks >= 2) {
+              try { await clearObstacleInFront(bot) } catch { /* */ }
+              stuckChecks = 0
+            }
           }
         } else {
           stuckChecks = 0
         }
-      }, 2000)
+      }, 1500)
 
       return await new Promise((resolve, reject) => {
         let timer = null

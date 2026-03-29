@@ -39,6 +39,39 @@ function isNearLava(blocks) {
   )
 }
 
+/**
+ * Extract a unified reflex view from any snapshot shape (flat or tiered).
+ * Rule conditions ONLY read from this view + internal reflex state — never from bot.
+ */
+function extractReflexView(snapshot) {
+  const rc = snapshot?.reflexContext || {}
+  const s = snapshot?.status || {}
+  return {
+    health: rc.health ?? s.health ?? 20,
+    food: rc.food ?? s.food ?? 20,
+    inWater: rc.inWater ?? false,
+    onFire: rc.onFire ?? false,
+    isInLava: rc.isInLava ?? false,
+    onGround: rc.onGround ?? true,
+    vy: rc.vy ?? 0,
+    oxygenLevel: rc.oxygenLevel ?? 20,
+    belowAir: rc.belowAir ?? false,
+    below2Air: rc.below2Air ?? false,
+    nearestHostileVec: rc.nearestHostileVec ?? null,
+    nearestCreeperVec: rc.nearestCreeperVec ?? null,
+    hostilesWithin3: rc.hostilesWithin3 ?? 0,
+    hostilesWithin7: rc.hostilesWithin7 ?? 0,
+    hasWeapon: rc.hasWeapon ?? false,
+    hasFood: rc.hasFood ?? false,
+    // From flat snapshot fields
+    threat_level: snapshot?.threat_level || 'none',
+    close_threat: snapshot?.close_threat === true,
+    recentDamageMs: s.recentDamageMs ?? null,
+    inventory: snapshot?.inventory || null,
+    nearbyBlocks: snapshot?.nearby?.blocks || [],
+  }
+}
+
 function columnBlockedAt(bot, floored, fx, fz) {
   const cell = floored.offset(fx, 0, fz)
   const low = bot.blockAt(cell)
@@ -86,6 +119,7 @@ async function pureFleeBurst(bot, awayDx, awayDz, ms = 900, opts = {}) {
   bot.setControlState('jump', false)
 }
 
+// Live bot helpers — used in execute() functions only (body control needs real-time data)
 function vectorFromNearestHostile(bot) {
   const origin = bot.entity?.position
   if (!origin) return null
@@ -109,18 +143,6 @@ function vectorFromNearestHostile(bot) {
   }
 }
 
-function nearestCreeperDistance(bot) {
-  const origin = bot.entity?.position
-  if (!origin) return Infinity
-  let best = Infinity
-  for (const e of Object.values(bot.entities || {})) {
-    if (!e?.position || e.id === bot.entity?.id) continue
-    if ((e.name || '').toLowerCase() !== 'creeper') continue
-    best = Math.min(best, origin.distanceTo(e.position))
-  }
-  return best
-}
-
 function vectorFromNearestCreeper(bot) {
   const origin = bot.entity?.position
   if (!origin) return null
@@ -141,14 +163,6 @@ function vectorFromNearestCreeper(bot) {
     dz: origin.z - best.position.z,
     dist: bestD,
   }
-}
-
-function hasWeaponInInventory(inventory) {
-  const items = Array.isArray(inventory?.summary) ? inventory.summary : (Array.isArray(inventory) ? inventory : [])
-  return items.some((item) => {
-    const n = (item?.name || '').toLowerCase()
-    return n.includes('sword') || n.includes('axe') || n.includes('bow')
-  })
 }
 
 function weaponScore(name) {
@@ -253,23 +267,19 @@ function createReflexLayer(bot) {
     return recentDamageEvents.length >= 2
   }
 
+  // ── Rules ──
+  // All condition functions read ONLY from:
+  //   rv (reflexView from snapshot) + internal reflex state (beingAttacked, recentStuckCount, etc.)
+  // All execute functions receive { bot } for body control (real-time data needed).
+
   const rules = [
     {
       id: 'falling_risk',
       name: 'emergency_jump',
       priority: 205,
-      condition: (snapshot) => {
-        const onGround = bot?.entity?.onGround
-        const vy = Number(bot?.entity?.velocity?.y ?? 0)
-        if (onGround === false && vy < -0.25) return true
-        const pos = bot?.entity?.position?.floored()
-        if (pos && onGround === true) {
-          const below = bot.blockAt(pos.offset(0, -1, 0))
-          const below2 = bot.blockAt(pos.offset(0, -2, 0))
-          const air1 = below && below.name === 'air'
-          const air2 = below2 && below2.name === 'air'
-          if (air1 && air2 && vy <= 0.08) return true
-        }
+      condition: (_snapshot, _ctx, rv) => {
+        if (rv.onGround === false && rv.vy < -0.25) return true
+        if (rv.onGround === true && rv.belowAir && rv.below2Air && rv.vy <= 0.08) return true
         return false
       },
       reason: 'Falling risk detected',
@@ -283,7 +293,7 @@ function createReflexLayer(bot) {
       id: 'emergency_lava',
       name: 'emergency_jump',
       priority: 200,
-      condition: (snapshot) => isNearLava(snapshot.nearby?.blocks),
+      condition: (_snapshot, _ctx, rv) => isNearLava(rv.nearbyBlocks),
       reason: 'Near lava — emergency jump to escape',
       execute: async ({ bot: b }) => {
         b.setControlState('jump', true)
@@ -299,11 +309,7 @@ function createReflexLayer(bot) {
       id: 'fire_or_burn_danger',
       name: 'flee_burst',
       priority: 198,
-      condition: (snapshot) => {
-        const inLava = bot?.entity?.isInLava === true
-        const burning = bot?.entity?.isOnFire === true
-        return inLava || burning
-      },
+      condition: (_snapshot, _ctx, rv) => rv.isInLava || rv.onFire,
       reason: 'Burn/fire danger detected',
       execute: async ({ bot: b }) => {
         enterCombatMode(2000)
@@ -324,11 +330,10 @@ function createReflexLayer(bot) {
       id: 'drowning_or_unsafe_water',
       name: 'flee_burst',
       priority: 196,
-      condition: (snapshot) => {
-        const inWater = bot?.entity?.isInWater === true
-        const oxygenLow = Number(bot?.oxygenLevel ?? 20) <= 6
-        const hp = snapshot?.status?.health ?? 20
-        return inWater && (oxygenLow || hp <= 10)
+      condition: (_snapshot, _ctx, rv) => {
+        if (!rv.inWater) return false
+        const oxygenLow = rv.oxygenLevel <= 6
+        return oxygenLow || rv.health <= 10
       },
       reason: 'Unsafe water / drowning risk',
       execute: async ({ bot: b }) => {
@@ -346,12 +351,11 @@ function createReflexLayer(bot) {
       id: 'recent_damage_snapshot_flee',
       name: 'flee_burst',
       priority: 143,
-      condition: (snapshot) => {
-        const ms = Number(snapshot?.status?.recentDamageMs ?? -1)
+      condition: (_snapshot, _ctx, rv) => {
+        const ms = Number(rv.recentDamageMs ?? -1)
         if (ms < 0 || ms >= 3200) return false
-        const threat = String(snapshot?.threat_level || '')
-        if (threat === 'high' || threat === 'low') return true
-        return snapshot?.close_threat === true || beingAttacked === true
+        if (rv.threat_level === 'high' || rv.threat_level === 'low') return true
+        return rv.close_threat || beingAttacked
       },
       reason: 'Recent damage window — flee burst',
       execute: async ({ bot: b }) => {
@@ -383,7 +387,9 @@ function createReflexLayer(bot) {
       id: 'creeper_close_pure_flee',
       name: 'flee_burst',
       priority: 198,
-      condition: () => nearestCreeperDistance(bot) <= 6,
+      condition: (_snapshot, _ctx, rv) => {
+        return rv.nearestCreeperVec && rv.nearestCreeperVec.dist <= 6
+      },
       reason: 'Creeper nearby — instant sprint away (no pathfinder)',
       execute: async ({ bot: b }) => {
         enterCombatMode(2200)
@@ -392,41 +398,16 @@ function createReflexLayer(bot) {
         resetAttackFlag()
       },
     },
-    {
-      id: 'repeated_stuck_recovery',
-      name: 'flee_burst',
-      priority: 132,
-      condition: () => recentStuckCount >= 2 && Date.now() - lastStuckAt <= 9000,
-      reason: 'Repeated stuck state',
-      execute: async ({ bot: b }) => {
-        enterCombatMode(2200)
-        const yaw = Math.random() * Math.PI * 2
-        await pureFleeBurst(b, Math.sin(yaw), Math.cos(yaw), 820, { jump: true })
-        recentStuckCount = Math.max(0, recentStuckCount - 1)
-      },
-    },
-    {
-      id: 'movement_stuck_escalate',
-      name: 'flee_burst',
-      priority: 137,
-      condition: () => recentStuckCount >= 3 && Date.now() - lastStuckAt <= 14000,
-      reason: 'Repeated stuck state — detour burst',
-      execute: async ({ bot: b }) => {
-        enterCombatMode(2600)
-        const yaw = Math.random() * Math.PI * 2
-        await pureFleeBurst(b, Math.sin(yaw), Math.cos(yaw), 950, { jump: true })
-        recentStuckCount = Math.max(0, recentStuckCount - 2)
-      },
-    },
+    // NOTE: stuck recovery rules removed per CLAUDE.md — "stuck" is not a survival threat.
+    // Stuck detection stays in perception (stuckDetector / noteStuck), but the RESPONSE
+    // is decided by the planner in the next planning cycle, not hardcoded here.
     {
       id: 'hostile_injured_melee_flee',
       name: 'flee_burst',
       priority: 199,
-      condition: (snapshot) => {
-        const hp = snapshot?.status?.health ?? 20
-        if (hp > 14) return false
-        const v = vectorFromNearestHostile(bot)
-        return v && v.dist <= 7
+      condition: (_snapshot, _ctx, rv) => {
+        if (rv.health > 14) return false
+        return rv.nearestHostileVec && rv.nearestHostileVec.dist <= 7
       },
       reason: 'Hostile nearby while injured — sprint away (flat flee)',
       execute: async ({ bot: b }) => {
@@ -441,9 +422,8 @@ function createReflexLayer(bot) {
       id: 'hostile_very_close_pure_flee',
       name: 'flee_burst',
       priority: 196,
-      condition: () => {
-        const v = vectorFromNearestHostile(bot)
-        return v && v.dist <= 3.6
+      condition: (_snapshot, _ctx, rv) => {
+        return rv.nearestHostileVec && rv.nearestHostileVec.dist <= 3.6
       },
       reason: 'Hostile in melee range — burst escape',
       execute: async ({ bot: b }) => {
@@ -458,10 +438,7 @@ function createReflexLayer(bot) {
       id: 'flee_critical_health',
       name: 'flee',
       priority: 150,
-      condition: (snapshot) => {
-        const health = snapshot.status?.health ?? 20
-        return health <= 5
-      },
+      condition: (_snapshot, _ctx, rv) => rv.health <= 5,
       reason: 'Critical health — flee regardless',
       execute: async ({ bot: b }) => {
         enterCombatMode(2600)
@@ -481,15 +458,12 @@ function createReflexLayer(bot) {
       id: 'eat_food_for_regen',
       name: 'eat_food',
       priority: 125,
-      condition: (snapshot) => {
-        if (!hasFoodInInventory(snapshot.inventory)) return false
-        const health = snapshot.status?.health ?? 20
-        const food = snapshot.status?.food ?? 20
-        const threat = snapshot.threat_level
-        if (food >= 20) return false
-        if (health >= 20 && food >= 18) return false
-        if (threat === 'high') return false
-        return health < 20 && food < 20
+      condition: (snapshot, _ctx, rv) => {
+        if (!rv.hasFood && !hasFoodInInventory(snapshot.inventory)) return false
+        if (rv.food >= 20) return false
+        if (rv.health >= 20 && rv.food >= 18) return false
+        if (rv.threat_level === 'high') return false
+        return rv.health < 20 && rv.food < 20
       },
       reason: 'Injured — eat to refill hunger so natural regen can work (full hunger heals HP)',
       execute: async ({ bot: b }) => {
@@ -507,16 +481,13 @@ function createReflexLayer(bot) {
       id: 'fight_back_armed',
       name: 'fight_back',
       priority: 110,
-      condition: (snapshot) => {
-        const threat = snapshot.threat_level
-        const health = snapshot.status?.health ?? 20
-        if (health < 12) return false
-        const closeHostiles = nearbyHostiles(bot, 2.8).length
-        if (closeHostiles > 0) return true
-        if (threat !== 'high' && threat !== 'low') return false
-        if (!beingAttacked && threat !== 'high') return false
-        if (health <= 5) return false
-        return hasWeaponInInventory(snapshot.inventory)
+      condition: (snapshot, _ctx, rv) => {
+        if (rv.health < 12) return false
+        if (rv.hostilesWithin3 > 0) return true
+        if (rv.threat_level !== 'high' && rv.threat_level !== 'low') return false
+        if (!beingAttacked && rv.threat_level !== 'high') return false
+        if (rv.health <= 5) return false
+        return rv.hasWeapon || hasWeaponInInventory(snapshot.inventory)
       },
       reason: 'Threat detected and armed/close — fight back',
       execute: async ({ bot: b }) => {
@@ -553,12 +524,10 @@ function createReflexLayer(bot) {
       id: 'fight_back_unarmed',
       name: 'fight_back',
       priority: 100,
-      condition: (snapshot) => {
+      condition: (_snapshot, _ctx, rv) => {
         if (!beingAttacked) return false
-        const health = snapshot.status?.health ?? 20
-        if (health <= 8) return false
-        const threat = snapshot.threat_level
-        return threat === 'high' || threat === 'low'
+        if (rv.health <= 8) return false
+        return rv.threat_level === 'high' || rv.threat_level === 'low'
       },
       reason: 'Being attacked unarmed but healthy — punch back',
       execute: async ({ bot: b }) => {
@@ -589,11 +558,9 @@ function createReflexLayer(bot) {
       id: 'flee_unarmed_low_health',
       name: 'flee',
       priority: 90,
-      condition: (snapshot) => {
-        const threat = snapshot.threat_level
-        if (threat !== 'high') return false
-        const health = snapshot.status?.health ?? 20
-        return health <= 12 && !hasWeaponInInventory(snapshot.inventory)
+      condition: (_snapshot, _ctx, rv) => {
+        if (rv.threat_level !== 'high') return false
+        return rv.health <= 12 && !rv.hasWeapon
       },
       reason: 'Under threat, unarmed, losing health — flee',
       execute: async ({ bot: b }) => {
@@ -604,6 +571,15 @@ function createReflexLayer(bot) {
       },
     },
   ]
+
+  // Legacy compat: fallback for inventory weapon check when reflexContext unavailable
+  function hasWeaponInInventory(inventory) {
+    const items = Array.isArray(inventory?.summary) ? inventory.summary : (Array.isArray(inventory) ? inventory : [])
+    return items.some((item) => {
+      const n = (item?.name || '').toLowerCase()
+      return n.includes('sword') || n.includes('axe') || n.includes('bow')
+    })
+  }
 
   function levelFromScore(score) {
     if (score >= 190) return 'fatal_immediate'
@@ -646,11 +622,15 @@ function createReflexLayer(bot) {
   }
 
   function check(snapshot, ctx) {
+    const rv = extractReflexView(snapshot)
     const triggered = rules
       .filter((rule) => {
         try {
-          return rule.condition(snapshot, ctx)
-        } catch {
+          return rule.condition(snapshot, ctx, rv)
+        } catch (err) {
+          // Log rule evaluation errors for diagnostics — rule is skipped but not silently
+          // eslint-disable-next-line no-console
+          console.error(`[reflex] rule ${rule.id || rule.name} condition error: ${err?.message || err}`)
           return false
         }
       })

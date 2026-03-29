@@ -263,6 +263,82 @@ function detectObstacles(blocks) {
   return { water, lava, cliff }
 }
 
+const REFLEX_FOOD_NAMES = new Set([
+  'bread', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton',
+  'cooked_salmon', 'cooked_cod', 'baked_potato', 'golden_apple', 'apple',
+  'melon_slice', 'sweet_berries', 'carrot', 'golden_carrot', 'cooked_rabbit',
+  'dried_kelp', 'mushroom_stew', 'rabbit_stew', 'beetroot_soup', 'pumpkin_pie',
+  'cookie', 'enchanted_golden_apple', 'beetroot',
+])
+
+/**
+ * Build enriched reflex context from live bot state.
+ * Contains everything reflex rule conditions need — so they never touch bot directly.
+ */
+function computeReflexContext(bot) {
+  const origin = bot.entity?.position
+
+  // Entity scan for hostile/creeper vectors and counts
+  let nearestHostileVec = null
+  let nearestCreeperVec = null
+  let hostilesWithin3 = 0
+  let hostilesWithin7 = 0
+  for (const e of Object.values(bot.entities ?? {})) {
+    if (!e?.position || e.id === bot.entity?.id) continue
+    const name = (e.name || e.kind || '').toLowerCase()
+    if (!HOSTILE_MOBS.has(name)) continue
+    const d = origin ? origin.distanceTo(e.position) : Infinity
+    if (d <= 3) hostilesWithin3++
+    if (d <= 7) hostilesWithin7++
+    if (origin && (!nearestHostileVec || d < nearestHostileVec.dist)) {
+      nearestHostileVec = { dx: origin.x - e.position.x, dz: origin.z - e.position.z, dist: round(d, 2) }
+    }
+    if (name === 'creeper' && origin && (!nearestCreeperVec || d < nearestCreeperVec.dist)) {
+      nearestCreeperVec = { dx: origin.x - e.position.x, dz: origin.z - e.position.z, dist: round(d, 2) }
+    }
+  }
+
+  // Falling risk block check (pre-compute for current position)
+  let belowAir = false
+  let below2Air = false
+  try {
+    const pos = bot.entity?.position?.floored()
+    if (pos) {
+      const b1 = bot.blockAt(pos.offset(0, -1, 0))
+      const b2 = bot.blockAt(pos.offset(0, -2, 0))
+      belowAir = !!(b1 && b1.name === 'air')
+      below2Air = !!(b2 && b2.name === 'air')
+    }
+  } catch { /* blockAt may throw near chunk edges */ }
+
+  // Inventory checks
+  const items = bot.inventory?.items?.() ?? []
+  const hasWeapon = items.some((i) => {
+    const n = (i?.name || '').toLowerCase()
+    return n.includes('sword') || n.includes('axe') || n.includes('bow')
+  })
+  const hasFood = items.some((i) => REFLEX_FOOD_NAMES.has(i?.name))
+
+  return Object.freeze({
+    inWater: !!bot.entity?.isInWater,
+    onFire: !!bot.entity?.isOnFire,
+    isInLava: !!bot.entity?.isInLava,
+    onGround: bot.entity?.onGround ?? true,
+    vy: bot.entity?.velocity?.y ?? 0,
+    oxygenLevel: bot.oxygenLevel ?? 20,
+    health: bot.health ?? 20,
+    food: bot.food ?? 20,
+    belowAir,
+    below2Air,
+    nearestHostileVec,
+    nearestCreeperVec,
+    hostilesWithin3,
+    hostilesWithin7,
+    hasWeapon,
+    hasFood,
+  })
+}
+
 function sense(bot, { radius = 5, farScan = true } = {}) {
   const blocks = getNearbyBlocks(bot, radius)
   const entities = getNearestEntities(bot, 24)
@@ -271,6 +347,7 @@ function sense(bot, { radius = 5, farScan = true } = {}) {
   const bands = hostileDistanceBands(entities)
   const threat = deriveThreatLevel(entities, status)
   const nearestHostile = nearestHostileDistance(bot)
+  const rc = computeReflexContext(bot)
 
   return {
     ts: Date.now(),
@@ -287,6 +364,7 @@ function sense(bot, { radius = 5, farScan = true } = {}) {
     threat_bands: bands,
     resources: summarizeResources(blocks),
     obstacles: detectObstacles(blocks),
+    reflexContext: rc,
   }
 }
 
@@ -328,5 +406,5 @@ function senseTiered(bot, { radius = 5, farScan = true } = {}, extras = {}) {
   }, extras)
 }
 
-module.exports = { sense, senseTiered, nearestHostileDistance, HOSTILE_MOBS }
+module.exports = { sense, senseTiered, computeReflexContext, nearestHostileDistance, HOSTILE_MOBS }
 

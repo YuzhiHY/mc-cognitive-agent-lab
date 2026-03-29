@@ -93,6 +93,7 @@ async function testUnsafeWaterScenario() {
     nearby: { blocks: [{ name: 'water', distance: 1 }], entities: [] },
     status: { health: 12, food: 20 },
     inventory: { summary: [] },
+    reflexContext: { inWater: true, oxygenLevel: 4, health: 12, food: 20 },
   }, { cycle: 4 })
   assert.strictEqual(out.decision.shouldInterrupt, true)
   assert.ok(['high', 'fatal_immediate', 'medium'].includes(out.decision.priority))
@@ -108,6 +109,7 @@ async function testFireBurnScenario() {
     nearby: { blocks: [], entities: [] },
     status: { health: 14, food: 20 },
     inventory: { summary: [] },
+    reflexContext: { onFire: true, health: 14, food: 20 },
   }, { cycle: 5 })
   assert.strictEqual(out.decision.shouldInterrupt, true)
   assert.ok(['high', 'fatal_immediate'].includes(out.decision.priority))
@@ -124,12 +126,15 @@ async function testFallingRiskScenario() {
     nearby: { blocks: [], entities: [] },
     status: { health: 20, food: 20 },
     inventory: { summary: [] },
+    reflexContext: { onGround: false, vy: -1.2, belowAir: true, below2Air: true, health: 20, food: 20 },
   }, { cycle: 6 })
   assert.strictEqual(out.decision.shouldInterrupt, true)
   assert.strictEqual(out.decision.priority, 'fatal_immediate')
 }
 
-async function testRepeatedStuckScenario() {
+async function testRepeatedStuckDoesNotTriggerReflex() {
+  // Per CLAUDE.md: stuck is NOT a survival threat. Reflex layer must NOT
+  // handle it — the planner decides the response in the next cycle.
   const bot = makeBot()
   const reflex = createReflexLayer(bot)
   reflex.noteStuck()
@@ -141,8 +146,7 @@ async function testRepeatedStuckScenario() {
     status: { health: 20, food: 20 },
     inventory: { summary: [] },
   }, { cycle: 7 })
-  assert.strictEqual(out.decision.shouldInterrupt, true)
-  assert.ok(['high', 'medium'].includes(out.decision.priority))
+  assert.strictEqual(out.decision.shouldInterrupt, false, 'stuck alone must not trigger reflex interrupt')
 }
 
 async function testDamageBurstScenario() {
@@ -168,7 +172,7 @@ async function run() {
   await testUnsafeWaterScenario()
   await testFireBurnScenario()
   await testFallingRiskScenario()
-  await testRepeatedStuckScenario()
+  await testRepeatedStuckDoesNotTriggerReflex()
   await testDamageBurstScenario()
   // eslint-disable-next-line no-console
   console.log('reflex arbitration tests passed')

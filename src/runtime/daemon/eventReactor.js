@@ -36,20 +36,28 @@ function createEventReactor({
   function setup() {
     // Health/damage listener
     healthListener = () => {
-      if (bot.health < (bot._lastDaemonHealth ?? 20)) {
-        shared.lastDamageAt = Date.now()
-        if (typeof reflexLayer?.noteDamage === 'function') reflexLayer.noteDamage()
-        interruptQueue.enqueue(systemInterrupt({
-          source: 'damage',
-          priority: 'high',
-          interruptReason: 'recent_damage_event',
-          metadata: {
-            cycle: shared.cycleCount,
-            health: bot.health,
-          },
-        }))
+      try {
+        if (bot.health < (bot._lastDaemonHealth ?? 20)) {
+          shared.lastDamageAt = Date.now()
+          if (typeof reflexLayer?.noteDamage === 'function') reflexLayer.noteDamage()
+          interruptQueue.enqueue(systemInterrupt({
+            source: 'damage',
+            priority: 'high',
+            interruptReason: 'recent_damage_event',
+            metadata: {
+              cycle: shared.cycleCount,
+              health: bot.health,
+            },
+          }))
+        }
+        bot._lastDaemonHealth = bot.health
+      } catch (err) {
+        void Promise.resolve(logger.log({
+          type: 'daemon_health_listener_error',
+          cycle: shared.cycleCount,
+          error: err?.message || String(err),
+        })).catch(() => {})
       }
-      bot._lastDaemonHealth = bot.health
     }
     bot.on('health', healthListener)
 
@@ -75,7 +83,15 @@ function createEventReactor({
             })
           }
         }
-      } catch { /* chat reaction must not crash daemon */ }
+      } catch (err) {
+        void Promise.resolve(logger.log({
+          type: 'daemon_chat_reaction_error',
+          cycle: shared.cycleCount,
+          from: username,
+          error: err?.message || String(err),
+          stack: err?.stack?.split('\n').slice(0, 4).join('\n') || null,
+        })).catch(() => {})
+      }
     }
     bot.on('chat', chatListener)
 
@@ -115,7 +131,8 @@ function createEventReactor({
       if (!reflexLayer || shared.reflexTakeoverInFlight) return
       const snapshot = sense(bot, { radius: 5, farScan: false })
       const nearest = nearestHostileDistance(bot)
-      const emergency = snapshot?.close_threat === true || nearest <= 3.2 || (bot.health ?? 20) <= 6
+      const snapshotHealth = snapshot?.status?.health ?? snapshot?.reflexContext?.health ?? 20
+      const emergency = snapshot?.close_threat === true || nearest <= 3.2 || snapshotHealth <= 6
       if (!emergency) return
       try {
         const arbitrated = typeof reflexLayer.arbitrate === 'function'
@@ -134,7 +151,7 @@ function createEventReactor({
           action: reflexAction.name,
           reason: reflexAction.reason,
           nearestHostile: nearest,
-          health: bot.health,
+          health: snapshotHealth,
           interruptPriority: interrupt.priority,
         })
 
@@ -172,8 +189,14 @@ function createEventReactor({
             fallbackMode: interrupt?.fallbackMode || null,
           })
         }
-      } catch {
+      } catch (err) {
         taskSm.setExecutionLock(false, 'fast_reflex_error')
+        void Promise.resolve(logger.log({
+          type: 'daemon_fast_reflex_error',
+          cycle: shared.cycleCount,
+          error: err?.message || String(err),
+          stack: err?.stack?.split('\n').slice(0, 4).join('\n') || null,
+        })).catch(() => {})
       }
     }, 120)
 
@@ -227,7 +250,13 @@ function createEventReactor({
         }
         shared.stuckWatchLastPos = pos.clone()
         shared.stuckWatchLastAt = now
-      } catch { /* */ }
+      } catch (err) {
+        void Promise.resolve(logger.log({
+          type: 'daemon_stuck_watch_error',
+          cycle: shared.cycleCount,
+          error: err?.message || String(err),
+        })).catch(() => {})
+      }
     }, 1150)
   }
 

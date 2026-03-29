@@ -158,7 +158,9 @@ async function testCompletionReallowsPlanning() {
   assert.ok(thinkCalls >= 2)
 }
 
-async function testFailureRoutesToRecoveryThenAssess() {
+async function testFailureStaysFailedForPlannerReassessment() {
+  // Per CLAUDE.md: failure does NOT auto-transition to 'recovering'.
+  // The planner reassesses in the next cycle.
   process.env.LOG_TO_FILE = 'false'
   const bot = makeBot()
   const daemon = createDaemon({
@@ -176,11 +178,11 @@ async function testFailureRoutesToRecoveryThenAssess() {
   })
   await daemon.runSingleCycleForTest()
   const trace1 = daemon.getStateTransitionTrace()
-  assert.ok(trace1.some((t) => t.to === 'failed'))
-  assert.ok(trace1.some((t) => t.to === 'recovering'))
+  assert.ok(trace1.some((t) => t.to === 'failed'), 'chain failure sets state to failed')
+  // No auto-recovering — planner handles it in the next cycle
   await daemon.runSingleCycleForTest()
   const trace2 = daemon.getStateTransitionTrace()
-  assert.ok(trace2.some((t) => t.to === 'assessing'))
+  assert.ok(trace2.some((t) => t.to === 'assessing'), 'next cycle re-enters planning')
 }
 
 async function testTransitionTraceHasStructuredFields() {
@@ -274,7 +276,7 @@ async function run() {
   await testNoReplanWhileExecuting()
   await testReflexInterruptStateTransitions()
   await testCompletionReallowsPlanning()
-  await testFailureRoutesToRecoveryThenAssess()
+  await testFailureStaysFailedForPlannerReassessment()
   await testTransitionTraceHasStructuredFields()
   await testDamageInterruptUsesNormalizedPath()
   await testInterruptLogsIncludePolicyReason()

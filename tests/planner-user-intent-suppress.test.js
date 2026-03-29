@@ -33,39 +33,60 @@ async function testAllowsWoodWhenGoalMentionsWood() {
   assert.strictEqual(sel?.name, 'mine_named_block')
 }
 
-async function testUnrecognizedIntentDoesNotForceRecovery() {
+async function testIntentFallbackAlwaysReturnsEmpty() {
   const { buildIntentAwareChain } = require('../src/runtime/planning/intentFallback')
 
-  // "come here" — produces player navigation
+  // Per CLAUDE.md: all decisions go through LLM planner. intentFallback does NOT
+  // do keyword-to-action mapping. It always returns [] — caller handles safe idle.
   const chain1 = buildIntentAwareChain({ goalText: '', playerTexts: ['come here'] })
-  assert.ok(chain1.length > 0, 'come here should produce navigate action')
-  assert.strictEqual(chain1[0]?.target, 'nearest_player')
+  assert.deepStrictEqual(chain1, [], 'intentFallback must not match keywords — decisions belong to LLM')
 
-  // Unrecognized intent returns empty — no false matches on Chinese text
   const chain2 = buildIntentAwareChain({ goalText: '', playerTexts: ['你是不是没看到树在哪？'] })
-  assert.deepStrictEqual(chain2, [], 'Chinese chat should NOT trigger keyword fallback')
+  assert.deepStrictEqual(chain2, [], 'Chinese chat returns empty')
 
-  // "dig stone" matches correctly
   const chain3 = buildIntentAwareChain({ goalText: 'dig stone', playerTexts: [] })
-  assert.ok(chain3.length > 0, 'dig stone should match')
-  assert.strictEqual(chain3[1]?.args?.block, 'stone')
+  assert.deepStrictEqual(chain3, [], 'intentFallback must not match keywords')
 
-  // Completely unrecognized English also returns empty
   const chain4 = buildIntentAwareChain({ goalText: 'explore the jungle biome', playerTexts: [] })
-  assert.deepStrictEqual(chain4, [], 'vague English should return empty, not false-match')
+  assert.deepStrictEqual(chain4, [], 'vague English returns empty')
+}
+
+async function testPersonalityWeightsSlotExists() {
+  // Verify the personality weights parameter is accepted
+  const sel = chooseHardcodedSkill({
+    goal: 'attack zombie',
+    snapshot: {
+      threat_level: 'high', close_threat: true,
+      status: { health: 20, food: 20, recentDamageMs: 2000 },
+      inventory: { summary: [] },
+    },
+    personalityWeights: { aggression: 2.0, caution: 0.5 },
+  })
+  assert.strictEqual(sel?.name, 'attack_nearest_hostile', 'high aggression should favor attack')
+
+  // With high caution + low aggression, retreat should win when low HP
+  const sel2 = chooseHardcodedSkill({
+    goal: '',
+    snapshot: {
+      threat_level: 'high', close_threat: true,
+      status: { health: 6, food: 20, recentDamageMs: 1000 },
+      inventory: { summary: [] },
+    },
+    personalityWeights: { aggression: 0.3, caution: 2.0 },
+  })
+  assert.strictEqual(sel2?.name, 'retreat_from_threat', 'high caution + low HP should favor retreat')
 }
 
 async function run() {
   await testEmptyExplicitIntentDoesNotSpinOnWait()
   await testSuppressWoodSkillWithoutWoodGoal()
   await testAllowsWoodWhenGoalMentionsWood()
-  await testUnrecognizedIntentDoesNotForceRecovery()
-  // eslint-disable-next-line no-console
+  await testIntentFallbackAlwaysReturnsEmpty()
+  await testPersonalityWeightsSlotExists()
   console.log('planner user intent suppress tests passed')
 }
 
 run().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error(err)
   process.exit(1)
 })

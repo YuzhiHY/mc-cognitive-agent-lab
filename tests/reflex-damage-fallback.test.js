@@ -69,6 +69,7 @@ async function testFallingRiskLowerVelocity() {
     nearby: { blocks: [], entities: [] },
     status: { health: 20, food: 20 },
     inventory: { summary: [] },
+    reflexContext: { onGround: false, vy: -0.35, belowAir: true, below2Air: true, health: 20, food: 20 },
   }, { cycle: 2 })
   assert.strictEqual(out.decision.shouldInterrupt, true)
   assert.strictEqual(out.decision.priority, 'fatal_immediate')

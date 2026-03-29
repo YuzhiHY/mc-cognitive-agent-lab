@@ -22,6 +22,7 @@ function createSharedState() {
     currentSkillMeta: null,
     stuckWatchLastPos: null,
     stuckWatchLastAt: 0,
+    stuckWatchZeroCount: 0,
 
     // Task lifecycle
     activeTask: null,

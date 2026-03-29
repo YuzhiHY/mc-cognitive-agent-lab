@@ -223,11 +223,13 @@ function createInterruptExecutor({
         cycle: shared.cycleCount,
         skillName: reflexAction.name,
       })
+      const errStack = err?.stack?.split('\n').slice(0, 5).join('\n') || null
       await logger.log({
         type: 'daemon_reflex_error',
         cycle: shared.cycleCount,
         action: reflexAction.name,
         error: err.message || String(err),
+        stack: errStack,
         source,
       })
       return { type: 'error', error: err.message || String(err) }

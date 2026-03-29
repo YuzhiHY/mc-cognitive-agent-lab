@@ -24,9 +24,23 @@ function inferCapabilities(snapshot) {
   }
 }
 
+/**
+ * Default personality weight constants.
+ * Each key modulates a scoring dimension. When personality is fully implemented,
+ * these will be supplied by the personality layer; for now they act as neutral placeholders.
+ */
+const DEFAULT_PERSONALITY_WEIGHTS = Object.freeze({
+  aggression: 1.0,    // multiplier on combat-offensive scores
+  caution: 1.0,       // multiplier on retreat/defensive scores
+  selfCare: 1.0,      // multiplier on eat/heal scores
+  curiosity: 1.0,     // multiplier on explore/gather scores
+  persistence: 1.0,   // multiplier on recovery/stuck handling scores
+})
+
 function scoreCandidate(base, {
-  goalText, snapshot, caps,
+  goalText, snapshot, caps, personalityWeights = DEFAULT_PERSONALITY_WEIGHTS,
 }) {
+  const w = { ...DEFAULT_PERSONALITY_WEIGHTS, ...personalityWeights }
   const g = normalizeText(goalText)
   const threatLevel = String(snapshot?.threat_level || 'none').toLowerCase()
   const closeThreat = snapshot?.close_threat === true
@@ -37,19 +51,19 @@ function scoreCandidate(base, {
   let score = base.baseScore || 0
 
   if (base.name === 'attack_nearest_hostile') {
-    if (threatLevel === 'high') score += 3.8
-    if (closeThreat) score += 3.1
-    if (recentDamage >= 0 && recentDamage < 6000) score += 2.8
+    if (threatLevel === 'high') score += 3.8 * w.aggression
+    if (closeThreat) score += 3.1 * w.aggression
+    if (recentDamage >= 0 && recentDamage < 6000) score += 2.8 * w.aggression
     if (g.includes('attack') || g.includes('fight') || g.includes('combat') || g.includes('打') || g.includes('战斗')) score += 2.4
-    if (hp <= 8) score -= 2.0
+    if (hp <= 8) score -= 2.0 * w.caution
   }
   if (base.name === 'retreat_from_threat') {
-    if (threatLevel === 'high' && hp <= 8) score += 3.5
-    if (closeThreat && hp <= 10) score += 2.2
+    if (threatLevel === 'high' && hp <= 8) score += 3.5 * w.caution
+    if (closeThreat && hp <= 10) score += 2.2 * w.caution
   }
   if (base.name === 'eat_best_food') {
-    if (caps.hasFood && hp <= 10) score += 2.6
-    if (caps.hasFood && food <= 10) score += 2.0
+    if (caps.hasFood && hp <= 10) score += 2.6 * w.selfCare
+    if (caps.hasFood && food <= 10) score += 2.0 * w.selfCare
     if (g.includes('eat') || g.includes('food') || g.includes('hungry') || g.includes('吃') || g.includes('饥饿')) score += 1.8
     if (!caps.hasFood) score -= 4
   }
@@ -59,24 +73,25 @@ function scoreCandidate(base, {
     if (!caps.hasTorch) score -= 2.6
   }
   if (base.name === 'mine_named_block') {
-    if (g.includes('tree') || g.includes('wood') || g.includes('log') || g.includes('砍树') || g.includes('木头')) score += 2.4
+    if (g.includes('tree') || g.includes('wood') || g.includes('log') || g.includes('砍树') || g.includes('木头')) score += 2.4 * w.curiosity
     if (caps.hasWoodLike) score -= 0.3
-    if (threatLevel === 'high') score -= 1.8
+    if (threatLevel === 'high') score -= 1.8 * w.caution
   }
   if (base.name === 'simple_craft_item') {
     if (g.includes('craft') || g.includes('make') || g.includes('合成')) score += 1.5
     if (caps.hasCraftingMaterial) score += 0.8
-    if (threatLevel === 'high') score -= 2
+    if (threatLevel === 'high') score -= 2 * w.caution
   }
   if (base.name === 'recover_from_stuck') {
-    if (g.includes('stuck') || g.includes('卡住') || g.includes('blocked')) score += 2.5
+    if (g.includes('stuck') || g.includes('卡住') || g.includes('blocked')) score += 2.5 * w.persistence
   }
 
   return score
 }
 
-function chooseHardcodedSkill({ goal, snapshot, options = {} }) {
+function chooseHardcodedSkill({ goal, snapshot, options = {}, personalityWeights = {} }) {
   const caps = inferCapabilities(snapshot)
+  const pw = { ...DEFAULT_PERSONALITY_WEIGHTS, ...personalityWeights }
   const candidates = [
     { name: 'attack_nearest_hostile', args: {}, baseScore: 0 },
     { name: 'retreat_from_threat', args: {}, baseScore: -0.2 },
@@ -95,7 +110,7 @@ function chooseHardcodedSkill({ goal, snapshot, options = {} }) {
         || g.includes('砍') || g.includes('树') || g.includes('木头')
       if (!woodIntent) continue
     }
-    const score = scoreCandidate(c, { goalText: goal, snapshot: snapshot || {}, caps })
+    const score = scoreCandidate(c, { goalText: goal, snapshot: snapshot || {}, caps, personalityWeights: pw })
     if (score < 1.2) continue
     if (!picked || score > picked.score) picked = { ...c, score }
   }
@@ -104,5 +119,4 @@ function chooseHardcodedSkill({ goal, snapshot, options = {} }) {
   return { name: picked.name, args: picked.args }
 }
 
-module.exports = { chooseHardcodedSkill }
-
+module.exports = { chooseHardcodedSkill, DEFAULT_PERSONALITY_WEIGHTS }
