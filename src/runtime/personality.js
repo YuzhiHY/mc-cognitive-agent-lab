@@ -244,7 +244,7 @@ function createPersonality({
     }
   }
 
-  async function consultSync(brief, state) {
+  async function consultSync(brief, state, { recentActions } = {}) {
     if (!isEnabled) return null
     try {
       const personaText = await readPersona()
@@ -255,6 +255,7 @@ function createPersonality({
         event: brief,
         currentMood: currentState.emotionalTags || [],
         recentHistory: (currentState.recentEvents || []).slice(-5),
+        recentActions: recentActions || undefined,
       })
 
       const response = await personalityLlm.plan({

@@ -21,6 +21,8 @@ function createEventReactor({
   interruptExecutor,
   voiceController,
   personality,
+  workingMemory,
+  promotionEngine,
 }) {
   let healthListener = null
   let chatListener = null
@@ -74,7 +76,16 @@ function createEventReactor({
     // Chat listener
     chatListener = async (username, message) => {
       if (username === bot.username) return
-      shared.playerMessageQueue.push({ from: username, text: message, ts: Date.now() })
+      const msgTs = Date.now()
+      shared.playerMessageQueue.push({ from: username, text: message, ts: msgTs })
+      // Record in working memory with unanswered tracking
+      if (workingMemory) {
+        workingMemory.recordPlayerMessage({ from: username, text: message, ts: msgTs, cycle: shared.cycleCount })
+        // Evaluate for habit promotion
+        if (promotionEngine) {
+          try { promotionEngine.evaluatePlayerMessage({ from: username, text: message }) } catch { /* best effort */ }
+        }
+      }
       if (!personality.isEnabled()) return
       try {
         const brief = `玩家${username}对你说了："${message}"`

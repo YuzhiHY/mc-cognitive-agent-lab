@@ -24,6 +24,7 @@ const { createTaskStateMachine } = require('./taskStateMachine')
 const { createInterruptQueue } = require('./interruptQueue')
 const { systemInterrupt } = require('./contracts/interruptDecision')
 const { createStableSkillRepository } = require('./skills')
+const { createMemorySystem } = require('./memory2')
 
 // Phase 9 pure-function modules
 const { currentThreat } = require('./daemon/pacingPolicy')
@@ -82,6 +83,10 @@ function createDaemon({
     filePrefix: process.env.LOG_FILE_PREFIX || 'agent',
   })
 
+  // --- Memory system v2 ---
+  const memoryDir = process.env.MEMORY_DIR || 'memory'
+  const memorySystem = createMemorySystem({ memory, memoryDir })
+
   // --- Sub-orchestrator wiring ---
 
   const { setTaskState } = createTaskStateHelper({ taskSm, logger, shared })
@@ -97,11 +102,14 @@ function createDaemon({
   const chainOrch = createChainOrchestrator({
     centralReasoning, chainExecutor, reflexLayer, taskSm, api, bot,
     memory, personality, logger, shared, setTaskState, stableSkills, voiceController,
+    memorySystem,
   })
 
   const eventReactor = createEventReactor({
     bot, reflexLayer, taskSm, interruptQueue, logger, shared,
     interruptExecutor, voiceController, personality,
+    workingMemory: memorySystem.workingMemory,
+    promotionEngine: memorySystem.promotionEngine,
   })
 
   // --- Convenience ---
@@ -116,6 +124,9 @@ function createDaemon({
     shared.cycleCount += 1
     shared.metrics.cycles += 1
     const cycleStart = Date.now()
+
+    // 0. Working memory maintenance
+    memorySystem.workingMemory.decay(shared.cycleCount)
 
     // 1. Sense
     const dmgSource = typeof reflexLayer?.getLastDamageSource === 'function'
@@ -149,6 +160,7 @@ function createDaemon({
       personality: personality.isEnabled() ? personality.getState() : undefined,
       memorySnapshot: memory ? memory.getAll() : {},
       playerMessages: pendingPlayerMessages.length > 0 ? pendingPlayerMessages : undefined,
+      memorySystem,
       runtimeDirectives: {
         primaryGoal: shared.activeTask?.goal || process.env.TASK_GOAL || null,
         hadPlayerMessageBatch: pendingPlayerMessages.length > 0,

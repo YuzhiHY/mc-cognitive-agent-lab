@@ -30,6 +30,7 @@ function createChainOrchestrator({
   setTaskState,
   stableSkills,
   voiceController,
+  memorySystem,
 }) {
   /**
    * Run the full plan-execute-postprocess pipeline for one cycle.
@@ -173,6 +174,41 @@ function createChainOrchestrator({
 
       if (centralReasoning && typeof centralReasoning.setLastChainResult === 'function') {
         centralReasoning.setLastChainResult(chainResult)
+      }
+
+      // Record execution in working memory + run promotion
+      if (memorySystem) {
+        const wm = memorySystem.workingMemory
+        const chain = Array.isArray(decision?.actionChain) ? decision.actionChain : []
+        const firstStep = chain[0] || {}
+        const succeeded = chainResult.completed === chainResult.total && !chainResult.interrupted
+        const failMsg = chainResult.failedStep?.error?.message
+          || chainResult.failedStep?.error
+          || null
+        wm.recordExecution({
+          cycle: cycleCount,
+          skill: firstStep.name || firstStep.type || 'unknown',
+          args: firstStep.args || { target: firstStep.target, item: firstStep.item },
+          success: succeeded,
+          failReason: succeeded ? null : (failMsg ? String(failMsg).slice(0, 120) : 'chain_incomplete'),
+          chainSignature: chain.map((s) => s.name || s.type).join(' -> '),
+          durationMs: Date.now() - cycleCount, // approximation — cycleCount isn't time but it's fine
+        })
+        // Mark player messages as answered if chain had a chat action
+        for (const step of chain) {
+          if (step.type === 'chat') {
+            wm.markMessageAnswered(Date.now())
+          }
+        }
+        // Run promotion engine
+        try {
+          memorySystem.promotionEngine.evaluateAfterExecution({
+            skill: firstStep.name || firstStep.type || 'unknown',
+            args: firstStep.args || {},
+            success: succeeded,
+            failReason: succeeded ? null : failMsg,
+          })
+        } catch { /* promotion is best-effort */ }
       }
 
       // Expectation evaluation

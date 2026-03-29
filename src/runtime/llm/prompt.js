@@ -33,9 +33,10 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       persona.trim(),
       '',
       '## 你会收到',
-      '- event：关于当前情况的简短描述（已包含事实锚点）',
+      '- event：关于当前情况的简短描述（已包含事实锚点，可能包含"最近行动"摘要）',
       '- currentMood：你上一刻的情绪标签',
       '- recentHistory：你最近经历的事件',
+      '- recentActions（可选）：你最近做过的事和结果。做过的事你记得，成功过的事你知道自己能做',
       '',
       '## 你的任务',
       '1. 根据认知基底中的规则，对 event 产生内在反应',
@@ -222,6 +223,11 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '它影响同优先级方案的排序，但不得覆盖 survival 规则。',
       '若 threat_level 非 none 或血量低，生存优先，忽略倾向信号。',
       '',
+      '## 玩家消息回应',
+      '如果 memory.unansweredPlayerMessages 非空，说明有玩家在跟你说话且你还没回应。',
+      '除非当前处于生存威胁中（threat_level 非 none），否则你应该在 actionChain 中包含一个 chat 步骤来回应。',
+      '回应内容由你根据情境决定——可以回答问题、表达感受、或简短确认。不要模板化。',
+      '',
       '## 失败处理',
       '如果 analysis 报告了连续失败（failureContext），你必须选择与之前不同的 goalType 或 targetResource。',
       '具体选什么由你根据环境判断。',
@@ -246,8 +252,12 @@ function buildUserPayload({ ctx, history }) {
   return JSON.stringify({ ctx, history })
 }
 
-function buildPersonalityUserPayload({ event, currentMood, recentHistory }) {
-  return JSON.stringify({ event, currentMood, recentHistory })
+function buildPersonalityUserPayload({ event, currentMood, recentHistory, recentActions }) {
+  const payload = { event, currentMood, recentHistory }
+  if (Array.isArray(recentActions) && recentActions.length > 0) {
+    payload.recentActions = recentActions
+  }
+  return JSON.stringify(payload)
 }
 
 function buildPersonalityExpectationPayload({

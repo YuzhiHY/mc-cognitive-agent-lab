@@ -282,9 +282,19 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     const systemPrompt = buildSystemPrompt({ mode: 'central_analyze' })
     const failureContext = buildFailureContext()
     const anchorFacts = buildAnchorFacts(ctx.snapshot, failureContext)
+    // Use memory projection if available, fallback to legacy
+    const ms = ctx.memorySystem
+    const memoryPayload = ms
+      ? ms.projection.forAnalyze({
+        goal: null,
+        snapshot: ctx.snapshot,
+        playerMessages: ctx.playerMessages,
+        failureContext,
+      })
+      : curateMemoryForPlanner(memory, ctx)
     const userPayload = buildCentralAnalyzePayload({
       snapshot: ctx.snapshot,
-      memory: curateMemoryForPlanner(memory, ctx),
+      memory: memoryPayload,
       lastChainResult,
       failureContext,
       cycle,
@@ -300,10 +310,21 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       _skipValidation: true,
     })
 
+    // Write goal context to working memory
+    if (ms) {
+      ms.workingMemory.setGoalContext({
+        selfGoal: result?.selfGoal || '',
+        goalType: result?.goalConstraints?.goalType || 'idle',
+        targetResource: result?.goalConstraints?.targetResource || null,
+        cycle,
+      })
+    }
+
     return {
       situationAnalysis: result?.situationAnalysis || '',
       personalityBrief: result?.personalityBrief || '',
       selfGoal: result?.selfGoal || '',
+      goalConstraints: result?.goalConstraints || null,
       severity: result?.severity || 'normal',
       rankedGoals: Array.isArray(result?.rankedGoals) ? result.rankedGoals : [],
       longTermLearnProposals: Array.isArray(result?.longTermLearnProposals)
@@ -313,13 +334,13 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     }
   }
 
-  async function phasePersonality({ personality, brief, logger, cycle }) {
+  async function phasePersonality({ personality, brief, logger, cycle, recentActions }) {
     if (!personality || !personality.isEnabled()) {
       return { voice: '', emotionalTags: [], suggestion: null }
     }
 
     try {
-      const result = await personality.consultSync(brief)
+      const result = await personality.consultSync(brief, undefined, { recentActions })
       if (logger) {
         await logger.log({
           type: 'central_personality_consult', cycle,
@@ -357,6 +378,15 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     const gameKnowledge = buildGameKnowledge(ctx.snapshot, stableSkills)
 
     const failureCtx = buildFailureContext()
+    // Use memory projection if available, fallback to legacy
+    const ms = ctx.memorySystem
+    const memoryPayload = ms
+      ? ms.projection.forDecide({
+        goal: analysis.selfGoal,
+        snapshot: ctx.snapshot,
+        analysis,
+      })
+      : curateMemoryForPlanner(memory, ctx)
     const userPayload = buildCentralDecidePayload({
       analysis: {
         situationAnalysis: analysis.situationAnalysis,
@@ -371,7 +401,7 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         tendencyHints: personalityFeedback.tendencyHints || [],
       },
       snapshot: ctx.snapshot,
-      memory: curateMemoryForPlanner(memory, ctx),
+      memory: memoryPayload,
       learnTaskQueue,
       rankedGoals: analysis.rankedGoals || [],
       failureContext: failureCtx,
@@ -395,6 +425,8 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         ? personalityFeedback.tendencyHints
         : [],
     }
+    // Write decision thought to working memory
+    if (ms) ms.workingMemory.setLastThought(decision.thought)
     // Prefer stable hardcoded skills before low-level ad-hoc chain when possible.
     if (!Array.isArray(decision.actionChain) || decision.actionChain.length === 0) {
       const selected = chooseHardcodedSkill({
@@ -664,12 +696,22 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     let personalityFeedback = { voice: '', emotionalTags: [], suggestion: null }
     if (!skipPersonality) {
       try {
+        // Enrich personality brief with recent execution context
+        let enrichedBrief = analysis.personalityBrief || ''
+        const ms = ctx?.memorySystem
+        let recentActions
+        if (ms) {
+          const actionSummary = ms.projection.formatRecentActionsForBrief()
+          if (actionSummary) enrichedBrief += '\n' + actionSummary
+          recentActions = ms.projection.forPersonality({ snapshot: ctx.snapshot }).recentActions
+        }
         personalityFeedback = await withBudget(
           phasePersonality({
             personality,
-            brief: analysis.personalityBrief,
+            brief: enrichedBrief,
             logger,
             cycle,
+            recentActions,
           }),
           personalityBudgetMs,
           'personality',
