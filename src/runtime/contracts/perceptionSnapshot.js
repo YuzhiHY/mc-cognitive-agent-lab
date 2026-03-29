@@ -83,6 +83,7 @@ function buildTieredSnapshot({
     ts,
     status: Object.freeze({ ...(status ?? {}), recentDamageMs: extras.recentDamageMs ?? null, damageSource: extras.damageSource ?? null }),
     inventory: inventory ?? { slotsUsed: 0, summary: [] },
+    heldItem: bot?.heldItem?.name ?? null,
     nearby: Object.freeze({
       blocks: blocks ?? [],
       entities: (entities ?? []).slice(0, 5),

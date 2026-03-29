@@ -117,6 +117,11 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '- 连续 3 次以上相同失败 = 禁止再输出相同的目标。',
       '- 你需要自主判断替代策略，基于当前环境分析。',
       '',
+      '## 手持物品（heldItem）',
+      '输入的 anchorFacts 中有"手持"字段，显示当前手持物品名称（如 wooden_pickaxe）或"空手"。',
+      '背包中有工具 ≠ 已装备。如果目标需要工具（如挖石头需要稿）但手持为空，在 goalConstraints.prerequisite 中写明"先装备XX"。',
+      '已知能力字段列出了 bot 已成功执行过的动作。做过的事你记得做过。',
+      '',
       '## personalityBrief 规范',
       '输入中有 anchorFacts 字段，包含硬事实锚点（HP%、威胁、连续失败等）。',
       'personalityBrief 必须以锚点事实原文开头，然后用 1-2 句自然语言描述当前情况。',
@@ -142,9 +147,12 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '   4 bot_chosen — 自己认可的目标',
       '   5 user_suggestion — 玩家建议',
       '   6 bot_avoid — 不想做的事',
-      '9. 长期学习候选（语义判断，不是关键词匹配）：',
-      '   若 playerMessages 里有持续性要求（"以后都要…""记得…"），写入 longTermLearnProposals。',
-      '   否则为空数组。',
+      '9. 长期学习提案（longTermLearnProposals）—— 这是唯一的语义学习入口：',
+      '   你是唯一能判断语义的模块。以下情况必须生成提案：',
+      '   a) 执行失败且错误信息包含因果关系（如 "需要XX" "缺少XX" "distance too far" "not in view"）→ type:"worldRule", immediateRecord:true',
+      '   b) 玩家教了一条规则或持续性要求（如 "你需要木稿来挖石头" "以后都要…" "记住…"）→ type:"worldRule" 或 type:"habit", immediateRecord:true',
+      '   c) 重复出现的失败模式表明一个游戏规则（如连续多次同类失败）→ type:"worldRule", immediateRecord:true',
+      '   没有以上情况则为空数组。不要生成不确定的提案。',
       '',
       '返回严格 JSON（不要 markdown 围栏）：',
       '{',
@@ -159,7 +167,7 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '  },',
       '  "severity": "idle | normal | urgent",',
       '  "rankedGoals": [{"tier":"survival|play|user_long_term|bot_chosen|user_suggestion|bot_avoid","title":"","detail":""}],',
-      '  "longTermLearnProposals": [{"id":"","summary":"","evidenceFromChat":"","successCriteria":"","successesRequired":1}],',
+      '  "longTermLearnProposals": [{"id":"规则ID","summary":"规则描述","type":"worldRule|habit","immediateRecord":true,"evidenceFromChat":"证据或空","successCriteria":"验证标准","successesRequired":1}],',
       '  "memoryUpdates": [{"action":"remember","key":"键","value":"值"}]',
       '}',
     ].join('\n')
@@ -228,6 +236,16 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '除非当前处于生存威胁中（threat_level 非 none），否则你应该在 actionChain 中包含一个 chat 步骤来回应。',
       '回应内容由你根据情境决定——可以回答问题、表达感受、或简短确认。不要模板化。',
       '',
+      '## 装备与前置条件',
+      'anchorFacts 中的"手持"字段显示当前手持物品。',
+      '如果手持为"空手"且目标动作需要工具（挖掘需要稿、战斗需要剑/斧），必须在 actionChain 开头加一个 equip 步骤。',
+      '背包中有物品 ≠ 已装备。每次挖掘/战斗前检查手持物品。',
+      '',
+      '如果 gameKnowledge.goalPrerequisites 非空，这是系统自动计算的硬前置步骤：',
+      '- 按顺序执行前置步骤（craft/place/equip），然后再执行主目标动作',
+      '- 例：goalPrerequisites=[{step:"equip",item:"wooden_pickaxe"}] → actionChain 开头加 {type:"skill_ref",name:"equip_named_item",args:{item:"wooden_pickaxe"}}',
+      '- 例：goalPrerequisites=[{step:"craft",item:"stick"},{step:"craft",item:"wooden_pickaxe"},{step:"equip",item:"wooden_pickaxe"}] → 按顺序 craft→craft→equip→主动作',
+      '',
       '## 失败处理',
       '如果 analysis 报告了连续失败（failureContext），你必须选择与之前不同的 goalType 或 targetResource。',
       '具体选什么由你根据环境判断。',
@@ -241,6 +259,29 @@ function buildSystemPrompt({ mode = 'default', personaText } = {}) {
       '  "actionChain": [动作步骤数组],',
       '  "memoryUpdates": [],',
       '  "nextGoalHint": "完成本轮后的下一步"',
+      '}',
+    ].join('\n')
+  }
+
+  if (mode === 'central_memory_review') {
+    return [
+      '你是 Minecraft 代理的记忆审查模块。',
+      '你会看到：完整的 workingMemory（最近执行记录+玩家消息+目标）和 longTermMemory（能力/世界规则/社交/习惯）。',
+      '',
+      '## 任务',
+      '1. 检查 workingMemory 中是否有值得提升到 longTerm 的模式：',
+      '   - 重复成功的行为模式（但不要重复已有的 capabilities）',
+      '   - 从失败记录推断的世界规则',
+      '   - 玩家消息中隐含的规则或习惯',
+      '2. 检查 longTermMemory 中是否有过时的条目：',
+      '   - 不再准确的世界规则',
+      '   - 过时的社交信息',
+      '3. 保守：不确定则不改。宁可遗漏也不要添加错误的规则。',
+      '',
+      '返回严格 JSON（不要 markdown 围栏）：',
+      '{',
+      '  "promotions": [{"category":"worldRules|habits|capabilities","key":"唯一键","description":"描述","reason":"为什么值得记住"}],',
+      '  "deletions": [{"category":"worldRules|habits|capabilities|social","key":"要删除的键","reason":"为什么过时了"}]',
       '}',
     ].join('\n')
   }
@@ -317,6 +358,10 @@ function buildCentralDecidePayload({
   return JSON.stringify(payload)
 }
 
+function buildCentralMemoryReviewPayload({ workingMemory, longTermMemory, cycle }) {
+  return JSON.stringify({ workingMemory, longTermMemory, cycle })
+}
+
 function buildCentralLearnEvalPayload({
   pendingTasks,
   plannedChain,
@@ -341,4 +386,5 @@ module.exports = {
   buildCentralAnalyzePayload,
   buildCentralDecidePayload,
   buildCentralLearnEvalPayload,
+  buildCentralMemoryReviewPayload,
 }

@@ -156,7 +156,9 @@ function testPromotionFirstSuccess() {
   fs.rmSync(tmpDir, { recursive: true, force: true })
 }
 
-function testPromotionCausalFailure() {
+function testPromotionCausalFailureNoLongerAutoPromotes() {
+  // Causal failure detection moved to LLM analyze phase (per CLAUDE.md).
+  // promotionEngine no longer does keyword matching.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-test-'))
   const wm = createWorkingMemory()
   const ltm = createLongTermMemory({ memoryDir: tmpDir })
@@ -167,8 +169,22 @@ function testPromotionCausalFailure() {
     success: false,
     failReason: 'need pickaxe to mine stone',
   })
-  assert.strictEqual(promoted.length, 1)
-  assert.strictEqual(promoted[0].category, 'worldRules')
+  assert.strictEqual(promoted.length, 0, 'causal failures no longer auto-promoted')
+  assert.strictEqual(Object.keys(ltm.getCategory('worldRules')).length, 0)
+  fs.rmSync(tmpDir, { recursive: true, force: true })
+}
+
+function testPromotionPlayerMessageOnlySocial() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-test-'))
+  const wm = createWorkingMemory()
+  const ltm = createLongTermMemory({ memoryDir: tmpDir })
+  const pe = createPromotionEngine({ workingMemory: wm, longTermMemory: ltm })
+  const promoted = pe.evaluatePlayerMessage({ from: 'Alice', text: '以后都要带着工作台' })
+  assert.strictEqual(promoted.length, 0, 'player messages no longer auto-promote habits')
+  assert.strictEqual(Object.keys(ltm.getCategory('habits')).length, 0, 'no habits created')
+  // But social should be updated
+  const social = ltm.getCategory('social')
+  assert.ok(social['player:Alice'], 'social record should be created')
   fs.rmSync(tmpDir, { recursive: true, force: true })
 }
 
@@ -254,7 +270,8 @@ async function run() {
   testQueryRelevant()
   testLegacyMigration()
   testPromotionFirstSuccess()
-  testPromotionCausalFailure()
+  testPromotionCausalFailureNoLongerAutoPromotes()
+  testPromotionPlayerMessageOnlySocial()
   testPromotionSkipsWait()
   testPersonalityProjection()
   testDecideProjectionIncludesUnanswered()

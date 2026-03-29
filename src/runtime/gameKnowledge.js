@@ -29,6 +29,137 @@ const COMMON_CRAFTING_CHAINS = Object.freeze({
   bread: '3 wheat → 需要 crafting_table',
 })
 
+// --- Tool tier prerequisites for mining ---
+// Blocks that require at least this tier of pickaxe to mine
+const TOOL_REQUIREMENTS = Object.freeze({
+  wooden_pickaxe: new Set([
+    'stone', 'cobblestone', 'coal_ore', 'deepslate_coal_ore',
+    'sandstone', 'red_sandstone', 'nether_rack', 'nether_bricks',
+    'blackstone', 'basalt', 'smooth_basalt',
+  ]),
+  stone_pickaxe: new Set([
+    'iron_ore', 'deepslate_iron_ore', 'lapis_ore', 'deepslate_lapis_ore',
+    'copper_ore', 'deepslate_copper_ore',
+  ]),
+  iron_pickaxe: new Set([
+    'diamond_ore', 'deepslate_diamond_ore', 'gold_ore', 'deepslate_gold_ore',
+    'redstone_ore', 'deepslate_redstone_ore', 'emerald_ore', 'deepslate_emerald_ore',
+  ]),
+})
+
+// Which tools satisfy each tier (higher tier works for lower tier requirements)
+const TOOL_TIER_SATISFIERS = Object.freeze({
+  wooden_pickaxe: new Set([
+    'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe',
+    'diamond_pickaxe', 'netherite_pickaxe', 'golden_pickaxe',
+  ]),
+  stone_pickaxe: new Set([
+    'stone_pickaxe', 'iron_pickaxe',
+    'diamond_pickaxe', 'netherite_pickaxe',
+  ]),
+  iron_pickaxe: new Set([
+    'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe',
+  ]),
+})
+
+// Crafting prerequisites: what do you need to craft each tool?
+const TOOL_CRAFT_CHAIN = Object.freeze({
+  wooden_pickaxe: { needs: ['oak_planks', 'stick'], needsCraftingTable: true },
+  stone_pickaxe: { needs: ['cobblestone', 'stick'], needsCraftingTable: true },
+  iron_pickaxe: { needs: ['iron_ingot', 'stick'], needsCraftingTable: true },
+  stick: { needs: ['oak_planks'], needsCraftingTable: false },
+  oak_planks: { needs: ['oak_log'], needsCraftingTable: false },
+  crafting_table: { needs: ['oak_planks'], needsCraftingTable: false },
+})
+
+/**
+ * Determine the required tool tier for mining a specific block.
+ * Returns the tier name (e.g., 'wooden_pickaxe') or null if no tool needed.
+ */
+function getRequiredToolTier(blockName) {
+  const name = String(blockName || '').toLowerCase()
+  for (const [tier, blocks] of Object.entries(TOOL_REQUIREMENTS)) {
+    if (blocks.has(name)) return tier
+  }
+  return null
+}
+
+/**
+ * Resolve prerequisite steps needed before executing a goal action.
+ *
+ * @param {{ target?: string, block?: string }} goalAction - the target block
+ * @param {object} snapshot - flat perception snapshot (with heldItem, inventory)
+ * @returns {Array<{ step: string, item: string, reason: string }>}
+ */
+function resolvePrerequisites(goalAction, snapshot) {
+  const blockName = String(goalAction?.target || goalAction?.block || '').toLowerCase().replace(/^nearest_/, '')
+  if (!blockName) return []
+
+  const requiredTier = getRequiredToolTier(blockName)
+  if (!requiredTier) return [] // no tool needed (dirt, sand, logs, etc.)
+
+  const heldItem = snapshot?.heldItem || null
+  const satisfiers = TOOL_TIER_SATISFIERS[requiredTier]
+
+  // Already holding an appropriate tool
+  if (heldItem && satisfiers.has(heldItem)) return []
+
+  // Check inventory for any satisfying tool
+  const inventoryItems = Array.isArray(snapshot?.inventory?.summary)
+    ? snapshot.inventory.summary
+    : []
+  const invNames = inventoryItems.map((i) => String(i.name || '').toLowerCase())
+
+  for (const toolName of satisfiers) {
+    if (invNames.includes(toolName)) {
+      return [{ step: 'equip', item: toolName, reason: `${blockName} 需要 ${requiredTier} 级别工具` }]
+    }
+  }
+
+  // No suitable tool in inventory — need to craft
+  const steps = []
+  const craftTarget = requiredTier // e.g., 'wooden_pickaxe'
+  const chain = TOOL_CRAFT_CHAIN[craftTarget]
+  if (!chain) {
+    // Unknown craft chain, just report the need
+    return [{ step: 'craft', item: craftTarget, reason: `${blockName} 需要 ${craftTarget}，背包中没有` }]
+  }
+
+  // Check if intermediate materials are available
+  const invSet = new Set(invNames)
+
+  // Check stick
+  if (chain.needs.includes('stick') && !invSet.has('stick')) {
+    // Need to craft sticks from planks
+    if (!invSet.has('oak_planks') && !invSet.has('birch_planks') && !invSet.has('spruce_planks')) {
+      // Need planks from logs
+      const hasLog = invNames.some((n) => n.endsWith('_log'))
+      if (hasLog) {
+        steps.push({ step: 'craft', item: 'planks', reason: '需要木板来合成木棍' })
+      }
+    }
+    steps.push({ step: 'craft', item: 'stick', reason: '需要木棍来合成工具' })
+  }
+
+  // Check if crafting table is needed and available
+  if (chain.needsCraftingTable) {
+    const hasCraftingTable = inventoryItems.some((i) => i.name === 'crafting_table')
+    const nearbyBlocks = Array.isArray(snapshot?.nearby?.blocks) ? snapshot.nearby.blocks : []
+    const craftingTableNearby = nearbyBlocks.some((b) => b.name === 'crafting_table')
+    if (!hasCraftingTable && !craftingTableNearby) {
+      steps.push({ step: 'craft', item: 'crafting_table', reason: '3x3合成需要工作台' })
+    }
+    if (hasCraftingTable && !craftingTableNearby) {
+      steps.push({ step: 'place', item: 'crafting_table', reason: '需要放置工作台才能使用' })
+    }
+  }
+
+  steps.push({ step: 'craft', item: craftTarget, reason: `${blockName} 需要 ${craftTarget}` })
+  steps.push({ step: 'equip', item: craftTarget, reason: `装备 ${craftTarget} 后才能挖掘` })
+
+  return steps
+}
+
 // Blocks not useful as navigation targets
 const IGNORE_BLOCKS = new Set([
   'air', 'cave_air', 'void_air', 'bedrock', 'barrier',
@@ -177,7 +308,7 @@ function summarizeSkillArgs(skill) {
 /**
  * Build anchor facts for personalityBrief — hard facts that LLM cannot omit or soften.
  */
-function buildAnchorFacts(snapshot, failureContext) {
+function buildAnchorFacts(snapshot, failureContext, opts = {}) {
   const hp = snapshot?.status?.health ?? 20
   const food = snapshot?.status?.food ?? 20
   const threatLevel = snapshot?.threat_level || 'none'
@@ -188,6 +319,10 @@ function buildAnchorFacts(snapshot, failureContext) {
   const consecutiveFailures = failureContext?.consecutiveOrRecentFailures || 0
   const entities = Array.isArray(snapshot?.nearby?.entities) ? snapshot.nearby.entities : []
   const nearbyPlayerCount = entities.filter((e) => e.type === 'player' || e.username).length
+
+  const heldItem = opts.heldItem || snapshot?.heldItem || null
+  const capabilities = Array.isArray(opts.capabilities) ? opts.capabilities : []
+  const capStr = capabilities.length > 0 ? capabilities.slice(0, 8).join(',') : '无'
 
   const hurtStr = recentlyHurt
     ? (damageFromPlayer ? `是(来自玩家${damageSource.name || ''})` : '是(来自环境/怪物)')
@@ -202,9 +337,11 @@ function buildAnchorFacts(snapshot, failureContext) {
     damageFromPlayer,
     consecutiveFailures,
     nearbyPlayerCount,
+    heldItem,
+    capabilities,
     isNight: snapshot?.status?.isNight || false,
-    formatted: `HP:${Math.round(hp / 20 * 100)}% 饥饿:${Math.round(food / 20 * 100)}% 威胁:${threatLevel} 连续失败:${consecutiveFailures} 受击:${hurtStr} 附近玩家:${nearbyPlayerCount}`,
+    formatted: `HP:${Math.round(hp / 20 * 100)}% 饥饿:${Math.round(food / 20 * 100)}% 威胁:${threatLevel} 连续失败:${consecutiveFailures} 受击:${hurtStr} 手持:${heldItem || '空手'} 已知能力:${capStr} 附近玩家:${nearbyPlayerCount}`,
   }
 }
 
-module.exports = { buildGameKnowledge, buildAnchorFacts, HOSTILE_TYPES }
+module.exports = { buildGameKnowledge, buildAnchorFacts, resolvePrerequisites, getRequiredToolTier, HOSTILE_TYPES, TOOL_REQUIREMENTS, TOOL_TIER_SATISFIERS }

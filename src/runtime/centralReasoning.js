@@ -3,8 +3,9 @@ const {
   buildCentralAnalyzePayload,
   buildCentralDecidePayload,
   buildCentralLearnEvalPayload,
+  buildCentralMemoryReviewPayload,
 } = require('./llm/prompt')
-const { buildGameKnowledge, buildAnchorFacts } = require('./gameKnowledge')
+const { buildGameKnowledge, buildAnchorFacts, resolvePrerequisites } = require('./gameKnowledge')
 // sense is no longer imported here — snapshot refresh is injected via refreshSnapshot callback
 const {
   getQueue,
@@ -63,6 +64,16 @@ const { compileActionChain } = require('./planning/chainCompiler')
 const { buildIntentAwareChain, shouldSuppressAutoWood } = require('./planning/intentFallback')
 const { derivePlannerMeta } = require('./contracts/plannerOutput')
 const { canSynthesize, filterSynthesisSteps } = require('./synthesisPolicy')
+
+function hashString(str) {
+  let hash = 0
+  const s = String(str)
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash) + s.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
+}
 
 function hasExplicitUserIntent(ctx, analysis) {
   if (Array.isArray(ctx?.playerMessages) && ctx.playerMessages.length > 0) return true
@@ -281,9 +292,18 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
   async function phaseAnalyze({ ctx, memory, cycle }) {
     const systemPrompt = buildSystemPrompt({ mode: 'central_analyze' })
     const failureContext = buildFailureContext()
-    const anchorFacts = buildAnchorFacts(ctx.snapshot, failureContext)
-    // Use memory projection if available, fallback to legacy
     const ms = ctx.memorySystem
+    const heldItem = ctx.tiered?.execution?.heldItem || ctx.snapshot?.heldItem || null
+    let capabilityKeys = []
+    if (ms) {
+      const caps = ms.longTermMemory.getCapabilities()
+      capabilityKeys = Object.keys(caps).slice(0, 10)
+    }
+    const anchorFacts = buildAnchorFacts(ctx.snapshot, failureContext, {
+      heldItem,
+      capabilities: capabilityKeys,
+    })
+    // Use memory projection if available, fallback to legacy
     const memoryPayload = ms
       ? ms.projection.forAnalyze({
         goal: null,
@@ -376,6 +396,15 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
 
     // Build gameKnowledge from current snapshot + skill registry
     const gameKnowledge = buildGameKnowledge(ctx.snapshot, stableSkills)
+
+    // Inject goal prerequisites (deterministic tool tier check)
+    const targetResource = analysis?.goalConstraints?.targetResource || null
+    if (targetResource) {
+      gameKnowledge.goalPrerequisites = resolvePrerequisites(
+        { target: targetResource },
+        ctx.snapshot,
+      )
+    }
 
     const failureCtx = buildFailureContext()
     // Use memory projection if available, fallback to legacy
@@ -625,7 +654,76 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     }
   }
 
+  const MEMORY_REVIEW_INTERVAL = 12
+
+  async function phaseMemoryReview({ ctx, cycle, logger }) {
+    const ms = ctx.memorySystem
+    if (!ms) return null
+
+    const systemPrompt = buildSystemPrompt({ mode: 'central_memory_review' })
+    const workingSnapshot = ms.workingMemory.getAll()
+    const longTermSnapshot = ms.longTermMemory.getAll()
+    const userPayload = buildCentralMemoryReviewPayload({
+      workingMemory: workingSnapshot,
+      longTermMemory: longTermSnapshot,
+      cycle,
+    })
+
+    const result = await llm.plan({
+      ctx: {},
+      history: [],
+      _systemPromptOverride: systemPrompt,
+      _userPayloadOverride: userPayload,
+      _skipValidation: true,
+    })
+
+    // Apply promotions
+    for (const p of (result?.promotions || [])) {
+      if (!p.key || !p.description) continue
+      if (p.category === 'worldRules') {
+        ms.longTermMemory.recordWorldRule({ key: p.key, description: p.description, source: 'memory_review' })
+      } else if (p.category === 'habits') {
+        ms.longTermMemory.recordHabit({ key: p.key, description: p.description, source: 'memory_review' })
+      } else if (p.category === 'capabilities') {
+        ms.longTermMemory.recordCapability({ key: p.key, description: p.description })
+      }
+    }
+
+    // Apply deletions
+    for (const d of (result?.deletions || [])) {
+      if (d.category && d.key) {
+        ms.longTermMemory.remove(d.category, d.key)
+      }
+    }
+
+    if (logger) {
+      await logger.log({
+        type: 'memory_review',
+        cycle,
+        promotions: (result?.promotions || []).length,
+        deletions: (result?.deletions || []).length,
+      })
+    }
+
+    return result
+  }
+
   async function think({ ctx, refreshSnapshot, memory, personality, logger, cycle }) {
+    // Phase 0: Periodic memory review (every N cycles)
+    if (cycle > 0 && cycle % MEMORY_REVIEW_INTERVAL === 0 && ctx.memorySystem) {
+      try {
+        await withBudget(
+          phaseMemoryReview({ ctx, cycle, logger }),
+          analyzeBudgetMs,
+          'memory_review',
+        )
+      } catch (err) {
+        if (logger) {
+          await logger.log({ type: 'memory_review_error', cycle, error: (err.message || String(err)).slice(0, 200) })
+        }
+      }
+    }
+
     // Phase 1: Analyze & Translate
     const thinkStart = Date.now()
     let analysis
@@ -687,6 +785,29 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         logger,
         cycle,
       )
+      // Immediate recording for worldRules/habits that don't need demonstration
+      const ms2 = ctx.memorySystem
+      if (ms2) {
+        for (const p of analysis.longTermLearnProposals) {
+          if (p.immediateRecord !== true) continue
+          const key = typeof p.id === 'string' && p.id.length > 0
+            ? p.id.replace(/[^a-zA-Z0-9._:\-]/g, '_')
+            : `auto_${hashString(p.summary || '').slice(0, 12)}`
+          if (p.type === 'worldRule') {
+            ms2.longTermMemory.recordWorldRule({
+              key,
+              description: String(p.summary || '').slice(0, 200),
+              source: p.evidenceFromChat ? 'player_teaching' : 'execution_failure',
+            })
+          } else if (p.type === 'habit') {
+            ms2.longTermMemory.recordHabit({
+              key,
+              description: String(p.summary || '').slice(0, 200),
+              source: p.evidenceFromChat ? 'player_explicit' : 'pattern_detection',
+            })
+          }
+        }
+      }
     }
 
     // Phase 2: Personality Consultation (skip on routine/low-severity cycles to save latency)
