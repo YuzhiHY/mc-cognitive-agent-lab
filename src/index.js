@@ -3,7 +3,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const primaryEnvPath = path.resolve(process.cwd(), '.env')
-const fallbackEnvPath = path.resolve(process.cwd(), '.gitignore', '.env')
+const fallbackEnvPath = path.resolve(process.cwd(), '.excluded', '.env')
 if (fs.existsSync(primaryEnvPath)) {
   dotenv.config({ path: primaryEnvPath })
 } else if (fs.existsSync(fallbackEnvPath)) {
