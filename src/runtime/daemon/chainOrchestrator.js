@@ -219,37 +219,27 @@ function createChainOrchestrator({
         })
       }
 
-      // Personality preference feedback
-      if (personality.isEnabled() && typeof personality.reinforcePreferenceProfile === 'function') {
+      // Personality tendency feedback (kernel method)
+      if (personality.isEnabled() && typeof personality.reinforceTendencyHints === 'function') {
         try {
-          const hints = decision?.personaPreferenceHints
-            || decision?.preferenceHints
-            || decision?.personalityPreferenceHints
-            || []
+          const hints = decision?.tendencyHints || []
           const success = chainSucceeded(chainResult)
-          const profile = await personality.reinforcePreferenceProfile({
+          await personality.reinforceTendencyHints({
             usedHints: hints,
             success,
-            interrupted: !!chainResult.interrupted,
           })
-          if (memory && profile) {
-            await memory.set('knowledge:persona:preference_profile', profile)
-          }
-          if (logger && profile) {
+          if (logger) {
             await logger.log({
-              type: 'persona_preference_feedback',
+              type: 'persona_tendency_feedback',
               cycle: cycleCount,
               success,
-              interrupted: !!chainResult.interrupted,
               usedHints: hints,
-              stabilityScore: profile.stabilityScore,
-              strategyBias: profile.strategyBias,
             })
           }
         } catch (err) {
-          // preference feedback is optional — log but never break loop
+          // tendency feedback is optional — log but never break loop
           void Promise.resolve(logger.log({
-            type: 'persona_preference_error',
+            type: 'persona_tendency_error',
             cycle: cycleCount,
             error: err?.message || String(err),
           })).catch(() => {})

@@ -1,17 +1,6 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const URGENCY_TAGS = new Set(['urgent', 'flee', 'danger', 'panic', 'retreat', 'run'])
-const DEFAULT_PERSONA_PROFILE = Object.freeze({
-  values: ['cooperative', 'cautious', 'resourceful'],
-  strategyBias: {
-    ask_player_first: 0.58,
-    avoid_night_surface: 0.6,
-    keep_tools_ready: 0.55,
-  },
-  stabilityScore: 0.6,
-  lastReinforcedAt: null,
-  recentPreferenceHints: [],
-})
 
 const EVENT_TEMPLATES = {
   task_failed: (ev, ctx) => {
@@ -99,34 +88,14 @@ function createPersonality({
   let triggerCount = 0
   let skipCount = 0
 
-  function mergeProfile(profile) {
-    const incoming = profile && typeof profile === 'object' ? profile : {}
-    const strategyBias = {
-      ...DEFAULT_PERSONA_PROFILE.strategyBias,
-      ...(incoming.strategyBias && typeof incoming.strategyBias === 'object'
-        ? incoming.strategyBias
-        : {}),
-    }
-    for (const k of Object.keys(strategyBias)) {
-      const v = Number(strategyBias[k])
-      strategyBias[k] = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.5
-    }
-    const values = Array.isArray(incoming.values) && incoming.values.length > 0
-      ? incoming.values.slice(0, 6).map((x) => String(x)).filter(Boolean)
-      : [...DEFAULT_PERSONA_PROFILE.values]
-    const stabilityRaw = Number(incoming.stabilityScore)
-    const stabilityScore = Number.isFinite(stabilityRaw)
-      ? Math.max(0.2, Math.min(0.95, stabilityRaw))
-      : DEFAULT_PERSONA_PROFILE.stabilityScore
-    const recentPreferenceHints = Array.isArray(incoming.recentPreferenceHints)
-      ? incoming.recentPreferenceHints.slice(-8).map((x) => String(x)).filter(Boolean)
+  function mergePersonaState(stored) {
+    const incoming = stored && typeof stored === 'object' ? stored : {}
+    const recentTendencyHints = Array.isArray(incoming.recentTendencyHints)
+      ? incoming.recentTendencyHints.slice(-8).map((x) => String(x)).filter(Boolean)
       : []
     return {
-      values,
-      strategyBias,
-      stabilityScore,
       lastReinforcedAt: incoming.lastReinforcedAt || null,
-      recentPreferenceHints,
+      recentTendencyHints,
     }
   }
 
@@ -139,7 +108,7 @@ function createPersonality({
         emotionalTags: Array.isArray(parsed?.emotionalTags) ? parsed.emotionalTags : [],
         recentEvents: Array.isArray(parsed?.recentEvents) ? parsed.recentEvents : [],
         lastUpdated: parsed?.lastUpdated || null,
-        personaProfile: mergeProfile(parsed?.personaProfile),
+        personaState: mergePersonaState(parsed?.personaState || parsed?.personaProfile),
       }
     } catch {
       return {
@@ -147,7 +116,7 @@ function createPersonality({
         emotionalTags: [],
         recentEvents: [],
         lastUpdated: null,
-        personaProfile: mergeProfile(null),
+        personaState: mergePersonaState(null),
       }
     }
   }
@@ -176,7 +145,6 @@ function createPersonality({
       event: taggedEvent.summary,
       currentMood: currentState.emotionalTags || [],
       recentHistory: (currentState.recentEvents || []).slice(-5),
-      personaProfile: currentState.personaProfile || mergeProfile(null),
     })
 
     const response = await personalityLlm.plan({
@@ -190,10 +158,10 @@ function createPersonality({
     const emotionalTags = Array.isArray(response?.emotionalTags)
       ? response.emotionalTags
       : []
-    const preferenceHints = Array.isArray(response?.preferenceHints)
-      ? response.preferenceHints.slice(0, 2).map((x) => String(x)).filter(Boolean)
+    const tendencyHints = Array.isArray(response?.tendencyHints)
+      ? response.tendencyHints.slice(0, 2).map((x) => String(x)).filter(Boolean)
       : []
-    return { voice, emotionalTags, preferenceHints }
+    return { voice, emotionalTags, tendencyHints }
   }
 
   async function processEvent(executionResult, ctx) {
@@ -225,9 +193,9 @@ function createPersonality({
         emotionalTags: result.emotionalTags,
         recentEvents: newRecentEvents,
         lastUpdated: new Date().toISOString(),
-        personaProfile: {
-          ...mergeProfile(state.personaProfile),
-          recentPreferenceHints: result.preferenceHints || [],
+        personaState: {
+          ...mergePersonaState(state.personaState),
+          recentTendencyHints: result.tendencyHints || [],
         },
       }
       await writeState(newState)
@@ -237,7 +205,7 @@ function createPersonality({
         taggedEvent: tagged,
         voice: result.voice,
         emotionalTags: result.emotionalTags,
-        preferenceHints: result.preferenceHints || [],
+        tendencyHints: result.tendencyHints || [],
         urgencyOverride: result.emotionalTags.some((t) => URGENCY_TAGS.has(t.toLowerCase())),
       }
     } catch (err) {
@@ -248,7 +216,7 @@ function createPersonality({
         error: err.message || String(err),
         voice: state.voice,
         emotionalTags: state.emotionalTags,
-        preferenceHints: state?.personaProfile?.recentPreferenceHints || [],
+        tendencyHints: state?.personaState?.recentTendencyHints || [],
         urgencyOverride: false,
       }
     }
@@ -263,7 +231,7 @@ function createPersonality({
         emotionalTags: Array.isArray(parsed?.emotionalTags) ? parsed.emotionalTags : [],
         recentEvents: Array.isArray(parsed?.recentEvents) ? parsed.recentEvents : [],
         lastUpdated: parsed?.lastUpdated || null,
-        personaProfile: mergeProfile(parsed?.personaProfile),
+        personaState: mergePersonaState(parsed?.personaState || parsed?.personaProfile),
       }
     } catch {
       return {
@@ -271,7 +239,7 @@ function createPersonality({
         emotionalTags: [],
         recentEvents: [],
         lastUpdated: null,
-        personaProfile: mergeProfile(null),
+        personaState: mergePersonaState(null),
       }
     }
   }
@@ -287,7 +255,6 @@ function createPersonality({
         event: brief,
         currentMood: currentState.emotionalTags || [],
         recentHistory: (currentState.recentEvents || []).slice(-5),
-        personaProfile: currentState.personaProfile || mergeProfile(null),
       })
 
       const response = await personalityLlm.plan({
@@ -303,8 +270,8 @@ function createPersonality({
         ? response.emotionalTags
         : []
       const suggestion = response?.suggestion || null
-      const preferenceHints = Array.isArray(response?.preferenceHints)
-        ? response.preferenceHints.slice(0, 2).map((x) => String(x)).filter(Boolean)
+      const tendencyHints = Array.isArray(response?.tendencyHints)
+        ? response.tendencyHints.slice(0, 2).map((x) => String(x)).filter(Boolean)
         : []
 
       const newRecentEvents = [
@@ -316,22 +283,22 @@ function createPersonality({
         emotionalTags,
         recentEvents: newRecentEvents,
         lastUpdated: new Date().toISOString(),
-        personaProfile: {
-          ...mergeProfile(currentState.personaProfile),
-          recentPreferenceHints: preferenceHints,
+        personaState: {
+          ...mergePersonaState(currentState.personaState),
+          recentTendencyHints: tendencyHints,
         },
       }
       await writeState(newState)
 
       triggerCount += 1
-      return { voice, emotionalTags, suggestion, preferenceHints }
+      return { voice, emotionalTags, suggestion, tendencyHints }
     } catch (err) {
       const fallbackState = getState()
       return {
         voice: fallbackState.voice || '',
         emotionalTags: fallbackState.emotionalTags || [],
         suggestion: null,
-        preferenceHints: fallbackState?.personaProfile?.recentPreferenceHints || [],
+        tendencyHints: fallbackState?.personaState?.recentTendencyHints || [],
         error: err.message || String(err),
       }
     }
@@ -392,38 +359,23 @@ function createPersonality({
     return { triggered: triggerCount, skipped: skipCount }
   }
 
-  async function reinforcePreferenceProfile({
+  async function reinforceTendencyHints({
     usedHints = [],
     success = false,
-    interrupted = false,
   } = {}) {
     if (!isEnabled) return null
     const state = await readState()
-    const profile = mergeProfile(state.personaProfile)
+    const ps = mergePersonaState(state.personaState)
     const hints = Array.isArray(usedHints) ? usedHints.map((x) => String(x)).filter(Boolean) : []
-    const deltaBase = success ? 0.03 : (interrupted ? -0.01 : -0.02)
-    const hintToBias = {
-      ask_player_first: 'ask_player_first',
-      avoid_night_surface: 'avoid_night_surface',
-      keep_tools_ready: 'keep_tools_ready',
-      prioritize_coop: 'ask_player_first',
-      play_safe_at_night: 'avoid_night_surface',
-      keep_weapon_and_food: 'keep_tools_ready',
-    }
-    for (const h of hints) {
-      const key = hintToBias[h]
-      if (!key || !(key in profile.strategyBias)) continue
-      profile.strategyBias[key] = Math.max(0, Math.min(1, profile.strategyBias[key] + deltaBase))
-    }
-    profile.stabilityScore = Math.max(0.2, Math.min(0.95, profile.stabilityScore + (success ? 0.01 : -0.005)))
-    profile.lastReinforcedAt = new Date().toISOString()
-    profile.recentPreferenceHints = hints.slice(-4)
+    // Simply track which hints were used recently — kernel method doesn't use numeric bias
+    ps.recentTendencyHints = hints.slice(-8)
+    ps.lastReinforcedAt = new Date().toISOString()
     await writeState({
       ...state,
-      personaProfile: profile,
+      personaState: ps,
       lastUpdated: new Date().toISOString(),
     })
-    return profile
+    return ps
   }
 
   return Object.freeze({
@@ -433,7 +385,7 @@ function createPersonality({
     consultExpectation,
     getState,
     getSummary,
-    reinforcePreferenceProfile,
+    reinforceTendencyHints,
     tagEvent,
   })
 }

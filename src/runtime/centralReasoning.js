@@ -4,6 +4,7 @@ const {
   buildCentralDecidePayload,
   buildCentralLearnEvalPayload,
 } = require('./llm/prompt')
+const { buildGameKnowledge, buildAnchorFacts } = require('./gameKnowledge')
 // sense is no longer imported here — snapshot refresh is injected via refreshSnapshot callback
 const {
   getQueue,
@@ -196,28 +197,43 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     return false
   }
 
-  function applyPersonaPreferenceTieBreak(actionChain, { hints = [], profile = null, snapshot = null } = {}) {
+  /**
+   * Apply personality tendency hints as tie-breaker for action ordering.
+   * Uses kernel-method tendencyHints (not label-method preferenceHints).
+   * Only reorders same-priority steps; never overrides survival actions.
+   */
+  function applyTendencyTieBreak(actionChain, { tendencyHints = [], snapshot = null } = {}) {
     if (!Array.isArray(actionChain) || actionChain.length < 2) return actionChain
     if (hardConstraintActive(snapshot)) return actionChain
-    const normalizedHints = (Array.isArray(hints) ? hints : []).map((x) => String(x).toLowerCase())
-    const bias = profile?.strategyBias || {}
+    const hints = new Set((Array.isArray(tendencyHints) ? tendencyHints : []).map((x) => String(x).toLowerCase()))
+    if (hints.size === 0) return actionChain
+
     const scoreStep = (s) => {
       const t = String(s?.type || '').toLowerCase()
       let score = 0
-      if (normalizedHints.includes('ask_player_first') || normalizedHints.includes('prioritize_coop')) {
-        if (t === 'chat') score += 2.1
-        if (t === 'navigate' && String(s?.target || '').toLowerCase().includes('player')) score += 1.8
+      // stay_near_familiar / seek_familiar → boost player-related navigation
+      if (hints.has('stay_near_familiar') || hints.has('seek_familiar')) {
+        if (t === 'navigate' && String(s?.target || '').toLowerCase().includes('player')) score += 1.5
+        if (t === 'skill_ref' && String(s?.name || '').includes('follow_player')) score += 1.5
       }
-      if (normalizedHints.includes('avoid_night_surface') || normalizedHints.includes('play_safe_at_night')) {
-        if (t === 'wait' || (t === 'navigate' && String(s?.target || '').toLowerCase().includes('dirt'))) score += 1.2
+      // retreat_first / avoid_unfamiliar_danger → boost wait, retreat skills
+      if (hints.has('retreat_first') || hints.has('avoid_unfamiliar_danger')) {
+        if (t === 'wait') score += 1.2
+        if (t === 'skill_ref' && String(s?.name || '').includes('retreat')) score += 1.5
       }
-      if (normalizedHints.includes('keep_tools_ready') || normalizedHints.includes('keep_weapon_and_food')) {
-        if (t === 'equip' || t === 'craft') score += 1.4
+      // continue_current → no reordering boost (keep original order)
+      // shift_attention → slight boost for non-repeat actions
+      if (hints.has('shift_attention')) {
+        if (t === 'navigate' || t === 'skill_ref') score += 0.3
       }
-      // persistent soft bias from profile
-      if (t === 'chat') score += Number(bias.ask_player_first || 0) * 0.6
-      if (t === 'navigate') score += Number(bias.avoid_night_surface || 0) * 0.2
-      if (t === 'equip' || t === 'craft') score += Number(bias.keep_tools_ready || 0) * 0.45
+      // approach_cautiously → navigation with low sprint
+      if (hints.has('approach_cautiously')) {
+        if (t === 'navigate') score += 0.5
+      }
+      // observe_unknown → wait / look actions
+      if (hints.has('observe_unknown')) {
+        if (t === 'wait') score += 0.8
+      }
       return score
     }
     const weighted = actionChain.map((s, idx) => ({ s, idx, score: scoreStep(s) }))
@@ -278,6 +294,7 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
   async function phaseAnalyze({ ctx, memory, cycle }) {
     const systemPrompt = buildSystemPrompt({ mode: 'central_analyze' })
     const failureContext = buildFailureContext()
+    const anchorFacts = buildAnchorFacts(ctx.snapshot, failureContext)
     const userPayload = buildCentralAnalyzePayload({
       snapshot: ctx.snapshot,
       memory: curateMemoryForPlanner(memory, ctx),
@@ -285,6 +302,7 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       failureContext,
       cycle,
       playerMessages: ctx.playerMessages || undefined,
+      anchorFacts,
     })
 
     const result = await llm.plan({
@@ -320,7 +338,7 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
           type: 'central_personality_consult', cycle,
           voice: result?.voice || '',
           emotionalTags: result?.emotionalTags || [],
-          preferenceHints: result?.preferenceHints || [],
+          tendencyHints: result?.tendencyHints || [],
           suggestion: result?.suggestion || null,
           error: result?.error || null,
         })
@@ -336,25 +354,8 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     }
   }
 
-  async function phaseDecide({ analysis, personalityFeedback, personaStateProfile, ctx, memory }) {
+  async function phaseDecide({ analysis, personalityFeedback, ctx, memory }) {
     const systemPrompt = buildSystemPrompt({ mode: 'central_decide' })
-    const inventorySummary = Array.isArray(ctx?.snapshot?.inventory?.summary)
-      ? ctx.snapshot.inventory.summary
-      : []
-    const names = inventorySummary.map((i) => i?.name).filter(Boolean)
-    const gate = {
-      has_pickaxe: names.some((n) => n.includes('pickaxe')),
-      has_axe: names.some((n) => n.includes('axe')),
-      has_sword: names.some((n) => n.includes('sword')),
-      has_food: names.some((n) => [
-        'bread', 'apple', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken',
-        'cooked_mutton', 'cooked_salmon', 'cooked_cod', 'baked_potato',
-      ].includes(n)),
-      has_logs: names.some((n) => n.endsWith('_log')),
-      has_planks: names.some((n) => n.endsWith('_planks')),
-      has_sticks: names.includes('stick'),
-      topInventory: inventorySummary.slice(0, 12),
-    }
 
     const learnTaskQueue = getQueue(memory).map((t) => ({
       id: t.id,
@@ -365,40 +366,29 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       priorityTier: t.priorityTier || 'user_long_term_habit',
     }))
 
-    const personaPreferenceProfile = memory?.get('knowledge:persona:preference_profile')
-      || personaStateProfile
-      || null
-    // Build available skills list for scheduling-first LLM prompt
-    const availableSkills = stableSkills
-      ? (typeof stableSkills.list === 'function' ? stableSkills.list() : []).map((s) => ({
-        name: s.name,
-        category: s.category || '',
-        description: s.description || '',
-        tags: s.tags || [],
-      }))
-      : []
+    // Build gameKnowledge from current snapshot + skill registry
+    const gameKnowledge = buildGameKnowledge(ctx.snapshot, stableSkills)
 
     const failureCtx = buildFailureContext()
     const userPayload = buildCentralDecidePayload({
       analysis: {
         situationAnalysis: analysis.situationAnalysis,
         selfGoal: analysis.selfGoal,
+        goalConstraints: analysis.goalConstraints || null,
         rankedGoals: analysis.rankedGoals || [],
       },
       personalityFeedback: {
         voice: personalityFeedback.voice,
         emotionalTags: personalityFeedback.emotionalTags,
         suggestion: personalityFeedback.suggestion,
-        preferenceHints: personalityFeedback.preferenceHints || [],
+        tendencyHints: personalityFeedback.tendencyHints || [],
       },
-      personaPreferenceProfile,
       snapshot: ctx.snapshot,
       memory: curateMemoryForPlanner(memory, ctx),
-      inventoryGate: gate,
       learnTaskQueue,
       rankedGoals: analysis.rankedGoals || [],
-      availableSkills,
       failureContext: failureCtx,
+      gameKnowledge,
     })
 
     const result = await llm.plan({
@@ -414,8 +404,8 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       actionChain: Array.isArray(result?.actionChain) ? result.actionChain : [],
       memoryUpdates: Array.isArray(result?.memoryUpdates) ? result.memoryUpdates : [],
       nextGoalHint: result?.nextGoalHint || null,
-      personaPreferenceHints: Array.isArray(personalityFeedback?.preferenceHints)
-        ? personalityFeedback.preferenceHints
+      tendencyHints: Array.isArray(personalityFeedback?.tendencyHints)
+        ? personalityFeedback.tendencyHints
         : [],
     }
     // Prefer stable hardcoded skills before low-level ad-hoc chain when possible.
@@ -452,11 +442,10 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         return !!exists
       })
     }
-    decision.actionChain = applyPersonaPreferenceTieBreak(
+    decision.actionChain = applyTendencyTieBreak(
       decision.actionChain,
       {
-        hints: personalityFeedback.preferenceHints || [],
-        profile: personaPreferenceProfile,
+        tendencyHints: personalityFeedback.tendencyHints || [],
         snapshot: ctx.snapshot,
       },
     )
@@ -700,7 +689,6 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         phaseDecide({
           analysis,
           personalityFeedback,
-          personaStateProfile: personality?.getState?.()?.personaProfile || null,
           ctx,
           memory,
         }),
