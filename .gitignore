@@ -1,0 +1,6 @@
+node_modules/
+.excluded/
+logs/
+personality/state.json
+*.log
+.env
