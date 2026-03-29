@@ -118,8 +118,14 @@ function createDaemon({
     const cycleStart = Date.now()
 
     // 1. Sense
+    const dmgSource = typeof reflexLayer?.getLastDamageSource === 'function'
+      ? reflexLayer.getLastDamageSource()
+      : null
     const tiered = senseTiered(bot, { radius: 5 }, {
       recentDamageMs: shared.lastDamageAt ? (Date.now() - shared.lastDamageAt) : null,
+      damageSource: dmgSource && dmgSource.at && (Date.now() - dmgSource.at < 6000)
+        ? dmgSource
+        : null,
     })
     const snapshot = tiered.flat
     const hasSignificantChange = significantWorldStateChange(shared.lastCycleSnapshot, snapshot)

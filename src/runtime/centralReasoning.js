@@ -429,6 +429,23 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
         return !!exists
       })
     }
+    // Hard constraint: if dominant failure repeated 3+, strip steps matching that failure pattern.
+    // LLM prompt says "禁止再输出相同目标" but may not comply — enforce here.
+    if (failureCtx && failureCtx.dominantFailure?.count >= 3) {
+      const dominant = String(failureCtx.dominantFailure.reason || '').toLowerCase()
+      if (dominant && decision.actionChain.length > 0) {
+        const before = decision.actionChain.length
+        decision.actionChain = decision.actionChain.filter((step) => {
+          const stepStr = JSON.stringify(step).toLowerCase()
+          return !stepStr.includes(dominant)
+        })
+        if (decision.actionChain.length < before) {
+          // eslint-disable-next-line no-console
+          console.warn(`[centralReasoning] stripped ${before - decision.actionChain.length} steps matching repeated failure: ${dominant}`)
+          decision.thought += ` [硬约束：剥离了与连续失败"${dominant}"匹配的步骤]`
+        }
+      }
+    }
     decision.actionChain = applyTendencyTieBreak(
       decision.actionChain,
       {

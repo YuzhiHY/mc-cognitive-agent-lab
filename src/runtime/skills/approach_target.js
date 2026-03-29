@@ -46,8 +46,9 @@ module.exports = Object.freeze({
         const out = await api.navigateTo(playerPos, { sprint: !!args?.sprint, timeoutMs: args?.timeoutMs || 9000 })
         return okSkill({ skillName: 'approach_target', startedAt, reason: 'approach_done', output: out })
       }
-      // Standard block target
-      const out = await api.navigateToNearestBlock(args?.target, args?.maxDistance || 32, { sprint: !!args?.sprint })
+      // Standard block target — strip 'nearest_' prefix if LLM passed it through
+      const rawTarget = String(args?.target || '').replace(/^nearest_/, '')
+      const out = await api.navigateToNearestBlock(rawTarget, args?.maxDistance || 32, { sprint: !!args?.sprint })
       return okSkill({ skillName: 'approach_target', startedAt, reason: 'approach_done', output: out })
     } catch (err) {
       return failSkill({ skillName: 'approach_target', startedAt, reason: 'approach_failed', err })

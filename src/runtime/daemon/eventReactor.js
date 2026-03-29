@@ -39,14 +39,24 @@ function createEventReactor({
       try {
         if (bot.health < (bot._lastDaemonHealth ?? 20)) {
           shared.lastDamageAt = Date.now()
-          if (typeof reflexLayer?.noteDamage === 'function') reflexLayer.noteDamage()
+          // Get damage source from reflex layer (populated by entityHurt listener)
+          const dmgSource = typeof reflexLayer?.getLastDamageSource === 'function'
+            ? reflexLayer.getLastDamageSource()
+            : { type: 'unknown' }
+          const isPlayerDamage = dmgSource.type === 'player'
+          if (typeof reflexLayer?.noteDamage === 'function') {
+            reflexLayer.noteDamage(isPlayerDamage ? 'player' : undefined)
+          }
+          // Player damage: lower priority, different reason — planner handles reaction
           interruptQueue.enqueue(systemInterrupt({
             source: 'damage',
-            priority: 'high',
-            interruptReason: 'recent_damage_event',
+            priority: isPlayerDamage ? 'low' : 'high',
+            interruptReason: isPlayerDamage ? 'player_hit_event' : 'recent_damage_event',
             metadata: {
               cycle: shared.cycleCount,
               health: bot.health,
+              damageSource: dmgSource.type,
+              damageSourceName: dmgSource.name || null,
             },
           }))
         }

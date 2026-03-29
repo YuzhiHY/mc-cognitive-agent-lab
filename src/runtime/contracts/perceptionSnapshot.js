@@ -31,6 +31,7 @@ function buildTieredSnapshot({
     fallingRisk: (bot?.entity?.onGround === false && (bot?.entity?.velocity?.y ?? 0) < -0.25),
     closeThreat: !!closeThreat,
     recentDamageMs: extras.recentDamageMs ?? null,
+    damageSource: extras.damageSource ?? null,
     stuckLikely: !!extras.stuckLikely,
     health: status?.health ?? 20,
     onGround: bot?.entity?.onGround ?? true,
@@ -80,7 +81,7 @@ function buildTieredSnapshot({
   // Consumers should migrate to tier-specific access.
   const flat = Object.freeze({
     ts,
-    status: Object.freeze({ ...(status ?? {}), recentDamageMs: extras.recentDamageMs ?? null }),
+    status: Object.freeze({ ...(status ?? {}), recentDamageMs: extras.recentDamageMs ?? null, damageSource: extras.damageSource ?? null }),
     inventory: inventory ?? { slotsUsed: 0, summary: [] },
     nearby: Object.freeze({
       blocks: blocks ?? [],

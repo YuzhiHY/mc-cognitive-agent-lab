@@ -228,14 +228,43 @@ function createReflexLayer(bot) {
   let lastStuckAt = 0
   let recentDamageEvents = []
   let lastDamageAt = 0
+  // Damage source tracking: 'hostile' | 'player' | 'environment' | 'unknown'
+  let lastDamageSource = { type: 'unknown', name: null, entityId: null, at: 0 }
 
   if (bot) {
+    // Track WHO dealt damage via entityHurt (fires when any entity takes damage)
+    bot.on('entityHurt', (entity, source) => {
+      if (entity?.id !== bot.entity?.id) return // only care about self
+      const now = Date.now()
+      if (source) {
+        const srcType = source.type === 'player' || source.username
+          ? 'player'
+          : HOSTILE_TYPES.has(String(source.name || source.kind || '').toLowerCase())
+            ? 'hostile'
+            : 'unknown'
+        lastDamageSource = {
+          type: srcType,
+          name: source.name || source.username || source.kind || null,
+          entityId: source.id ?? null,
+          at: now,
+        }
+      } else {
+        // No source entity — environmental damage (fall, fire, drown, etc.)
+        lastDamageSource = { type: 'environment', name: null, entityId: null, at: now }
+      }
+    })
+
     bot.on('health', () => {
       if (bot.health < lastHealth) {
-        beingAttacked = true
-        lastDamageAt = Date.now()
-        recentDamageEvents.push(lastDamageAt)
-        recentDamageEvents = recentDamageEvents.filter((t) => lastDamageAt - t <= 4000)
+        const now = Date.now()
+        // If entityHurt didn't fire recently (>200ms ago), source is environmental
+        if (now - lastDamageSource.at > 200) {
+          lastDamageSource = { type: 'environment', name: null, entityId: null, at: now }
+        }
+        beingAttacked = lastDamageSource.type !== 'player'
+        lastDamageAt = now
+        recentDamageEvents.push(now)
+        recentDamageEvents = recentDamageEvents.filter((t) => now - t <= 4000)
       }
       lastHealth = bot.health
     })
@@ -249,11 +278,13 @@ function createReflexLayer(bot) {
   function isCombatMode() {
     return Date.now() < combatModeUntilTs
   }
-  function noteDamage() {
-    enterCombatMode(3000)
+  function noteDamage(source) {
     lastDamageAt = Date.now()
     recentDamageEvents.push(lastDamageAt)
     recentDamageEvents = recentDamageEvents.filter((t) => lastDamageAt - t <= 4000)
+    // Player damage: don't enter combat mode — planner handles reaction
+    if (source === 'player' || lastDamageSource.type === 'player') return
+    enterCombatMode(3000)
   }
   function noteStuck() {
     const now = Date.now()
@@ -707,6 +738,7 @@ function createReflexLayer(bot) {
     noteDamage,
     noteStuck,
     resetAttackFlag,
+    getLastDamageSource: () => ({ ...lastDamageSource }),
   })
 }
 

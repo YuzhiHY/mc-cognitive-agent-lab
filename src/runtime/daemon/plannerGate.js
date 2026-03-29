@@ -19,14 +19,30 @@ function evaluatePlannerGate({ taskSm, reflexLayer, snapshot, cycleCount }) {
     }
   }
   if (typeof reflexLayer?.isCombatMode === 'function' && reflexLayer.isCombatMode()) {
-    return {
-      allowed: false,
-      reason: 'combat_mode_hold',
-      combatHold: true,
-      state: taskSm.getState().state,
-      executionLock: taskSm.getState().executionLock,
-      threat: snapshot?.threat_level || null,
+    // Allow planning if combat mode is active but no actual threat exists nearby.
+    // This prevents 5-cycle idle stalls after a flee when the danger has passed.
+    const threat = snapshot?.threat_level || 'none'
+    const entities = Array.isArray(snapshot?.nearby?.entities) ? snapshot.nearby.entities : []
+    const hostileNearby = entities.some((e) => {
+      const name = String(e.name || e.kind || '').toLowerCase()
+      return e.distance <= 6 && (
+        name === 'zombie' || name === 'skeleton' || name === 'creeper' ||
+        name === 'spider' || name === 'enderman' || name === 'drowned' ||
+        name === 'husk' || name === 'stray' || name === 'cave_spider' ||
+        name === 'witch' || name === 'slime' || name === 'phantom'
+      )
+    })
+    if (threat !== 'none' || hostileNearby) {
+      return {
+        allowed: false,
+        reason: 'combat_mode_hold',
+        combatHold: true,
+        state: taskSm.getState().state,
+        executionLock: taskSm.getState().executionLock,
+        threat,
+      }
     }
+    // Threat gone — release combat hold early, allow planning
   }
   return {
     allowed: true,

@@ -57,19 +57,25 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
   const entities = Array.isArray(nearby.entities) ? nearby.entities : []
   const inventory = Array.isArray(snapshot?.inventory?.summary) ? snapshot.inventory.summary : []
 
-  // --- Navigable targets (from nearby blocks, deduplicated) ---
+  // --- Nearby block names (deduplicated, raw names) ---
   const blockNameSet = new Set()
   for (const b of blocks) {
     const name = String(b?.name || '').toLowerCase()
     if (name && !IGNORE_BLOCKS.has(name)) blockNameSet.add(name)
   }
-  const navigableTargets = [...blockNameSet].sort().map((n) => `nearest_${n}`)
-  // Always include player if entities have one
+  const sortedBlockNames = [...blockNameSet].sort()
+
+  // navigableTargets: for `navigate` action (nearest_ prefix)
+  const navigableTargets = sortedBlockNames.map((n) => `nearest_${n}`)
   const hasPlayer = entities.some((e) => e.type === 'player' || e.username)
   if (hasPlayer) navigableTargets.push('nearest_player')
 
+  // blockTargets: raw block names for skill_ref args (approach_target, mine_named_block, etc.)
+  const blockTargets = [...sortedBlockNames]
+  if (hasPlayer) blockTargets.push('nearest_player')
+
   // --- Diggable blocks (same set, just raw names) ---
-  const diggableBlocks = [...blockNameSet].sort()
+  const diggableBlocks = [...sortedBlockNames]
 
   // --- Attackable entities ---
   const attackable = []
@@ -126,8 +132,8 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
 
   return {
     actionSchema: {
-      skill_ref: 'name (from availableSkills), args (object)',
-      navigate: 'target (from navigableTargets)',
+      skill_ref: 'name (from availableSkills), args中的target/block用blockTargets中的值（裸方块名，不带nearest_前缀）',
+      navigate: 'target (from navigableTargets, 带nearest_前缀)',
       dig: 'target (from diggableBlocks)',
       craft: 'item (from craftableItems), count (number)',
       equip: 'item (from equippableItems)',
@@ -139,6 +145,7 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
     },
     availableSkills,
     navigableTargets,
+    blockTargets,
     diggableBlocks,
     craftableItems,
     attackableEntities: attackable,
@@ -150,7 +157,7 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
 function summarizeSkillArgs(skill) {
   const name = skill.name
   const argMap = {
-    approach_target: 'target (block name or "nearest_player"), sprint (boolean)',
+    approach_target: 'target (from blockTargets, 裸方块名不带nearest_前缀), sprint (boolean)',
     follow_player: 'distance (number, default 3)',
     mine_named_block: 'block (block name), maxDistance (number)',
     attack_nearest_hostile: '(no args needed)',
@@ -176,20 +183,27 @@ function buildAnchorFacts(snapshot, failureContext) {
   const threatLevel = snapshot?.threat_level || 'none'
   const recentDamageMs = snapshot?.status?.recentDamageMs
   const recentlyHurt = typeof recentDamageMs === 'number' && recentDamageMs >= 0 && recentDamageMs < 6000
+  const damageSource = snapshot?.status?.damageSource || null
+  const damageFromPlayer = recentlyHurt && damageSource?.type === 'player'
   const consecutiveFailures = failureContext?.consecutiveOrRecentFailures || 0
   const entities = Array.isArray(snapshot?.nearby?.entities) ? snapshot.nearby.entities : []
   const nearbyPlayerCount = entities.filter((e) => e.type === 'player' || e.username).length
+
+  const hurtStr = recentlyHurt
+    ? (damageFromPlayer ? `是(来自玩家${damageSource.name || ''})` : '是(来自环境/怪物)')
+    : '否'
 
   return {
     healthPercent: Math.round(hp / 20 * 100),
     foodPercent: Math.round(food / 20 * 100),
     threatLevel,
     recentlyHurt,
+    damageSource: damageSource?.type || null,
+    damageFromPlayer,
     consecutiveFailures,
     nearbyPlayerCount,
     isNight: snapshot?.status?.isNight || false,
-    // Pre-formatted string for injection into personalityBrief prompt
-    formatted: `HP:${Math.round(hp / 20 * 100)}% 饥饿:${Math.round(food / 20 * 100)}% 威胁:${threatLevel} 连续失败:${consecutiveFailures} 受击:${recentlyHurt ? '是' : '否'} 附近玩家:${nearbyPlayerCount}`,
+    formatted: `HP:${Math.round(hp / 20 * 100)}% 饥饿:${Math.round(food / 20 * 100)}% 威胁:${threatLevel} 连续失败:${consecutiveFailures} 受击:${hurtStr} 附近玩家:${nearbyPlayerCount}`,
   }
 }
 
