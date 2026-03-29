@@ -18,6 +18,8 @@ const { createLocalFileLLMClient } = require('./runtime/llm/localFileClient')
 const { createOpenAILLMClient } = require('./runtime/llm/openaiClient')
 const { createAnthropicLLMClient } = require('./runtime/llm/anthropicClient')
 const { createDeepSeekLLMClient } = require('./runtime/llm/deepseekClient')
+const { createGeminiLLMClient } = require('./runtime/llm/geminiClient')
+const { createCustomLLMClient } = require('./runtime/llm/customClient')
 
 function getLLMClient() {
   const provider = (process.env.LLM_PROVIDER || 'local').toLowerCase()
@@ -43,6 +45,24 @@ function getLLMClient() {
       apiKey: process.env.DEEPSEEK_API_KEY,
       model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
       baseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+      timeoutMs: process.env.LLM_TIMEOUT_MS ? Number(process.env.LLM_TIMEOUT_MS) : 15_000,
+    })
+  }
+
+  if (provider === 'gemini') {
+    return createGeminiLLMClient({
+      apiKey: process.env.GEMINI_API_KEY,
+      model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+      baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
+      timeoutMs: process.env.LLM_TIMEOUT_MS ? Number(process.env.LLM_TIMEOUT_MS) : 15_000,
+    })
+  }
+
+  if (provider === 'custom') {
+    return createCustomLLMClient({
+      apiKey: process.env.CUSTOM_LLM_API_KEY || '',
+      model: process.env.CUSTOM_LLM_MODEL || 'default',
+      baseUrl: process.env.CUSTOM_LLM_BASE_URL,
       timeoutMs: process.env.LLM_TIMEOUT_MS ? Number(process.env.LLM_TIMEOUT_MS) : 15_000,
     })
   }
@@ -110,6 +130,22 @@ function getPersonalityLLMClient() {
       apiKey,
       model: model || 'deepseek-chat',
       baseUrl: baseUrl || 'https://api.deepseek.com',
+      timeoutMs: personalityTimeoutMs,
+    })
+  }
+  if (provider === 'gemini' && apiKey) {
+    return createGeminiLLMClient({
+      apiKey,
+      model: model || 'gemini-2.5-flash',
+      baseUrl: baseUrl || 'https://generativelanguage.googleapis.com/v1beta',
+      timeoutMs: personalityTimeoutMs,
+    })
+  }
+  if (provider === 'custom') {
+    return createCustomLLMClient({
+      apiKey: apiKey || '',
+      model: model || 'default',
+      baseUrl: baseUrl,
       timeoutMs: personalityTimeoutMs,
     })
   }
