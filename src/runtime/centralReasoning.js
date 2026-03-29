@@ -142,19 +142,6 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     const blocks = ctx?.snapshot?.nearby?.blocks || []
     const hasOak = blocks.some((b) => String(b.name || '').toLowerCase() === 'oak_log')
     const hasDirt = blocks.some((b) => String(b.name || '').toLowerCase() === 'dirt' || String(b.name || '').toLowerCase() === 'grass_block')
-    const playerMsgs = Array.isArray(ctx?.playerMessages) ? ctx.playerMessages : []
-    if (playerMsgs.length > 0) {
-      const latest = playerMsgs[playerMsgs.length - 1]
-      return {
-        thought: 'fast_fallback: acknowledge player and keep moving',
-        actionChain: [
-          { type: 'chat', message: `收到，${latest.from || '玩家'}。我先执行一个快速动作，随后继续详细规划。` },
-          { type: 'wait', timeoutMs: 500 },
-        ],
-        memoryUpdates: [],
-        nextGoalHint: 'fast_fallback_ack',
-      }
-    }
     if (hasOak) {
       return {
         thought: 'fast_fallback: gather nearby oak log via stable skill',
