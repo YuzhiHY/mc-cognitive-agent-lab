@@ -25,6 +25,7 @@ const { createInterruptQueue } = require('./interruptQueue')
 const { systemInterrupt } = require('./contracts/interruptDecision')
 const { createStableSkillRepository } = require('./skills')
 const { createMemorySystem } = require('./memory2')
+const { createCandidateSkillManager } = require('./candidateSkillManager')
 
 // Phase 9 pure-function modules
 const { currentThreat } = require('./daemon/pacingPolicy')
@@ -65,6 +66,7 @@ function createDaemon({
   const stableSkills = createStableSkillRepository()
   const interruptQueue = createInterruptQueue()
   const shared = createSharedState()
+  const candidateSkillMgr = createCandidateSkillManager()
 
   const personalityEnabled =
     String(process.env.PERSONALITY_ENABLED || 'false').toLowerCase() === 'true'
@@ -102,7 +104,7 @@ function createDaemon({
   const chainOrch = createChainOrchestrator({
     centralReasoning, chainExecutor, reflexLayer, taskSm, api, bot,
     memory, personality, logger, shared, setTaskState, stableSkills, voiceController,
-    memorySystem,
+    memorySystem, candidateSkillMgr,
   })
 
   const eventReactor = createEventReactor({

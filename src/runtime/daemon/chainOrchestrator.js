@@ -31,6 +31,7 @@ function createChainOrchestrator({
   stableSkills,
   voiceController,
   memorySystem,
+  candidateSkillMgr,
 }) {
   /**
    * Run the full plan-execute-postprocess pipeline for one cycle.
@@ -234,7 +235,54 @@ function createChainOrchestrator({
         }
       }
 
-      // Skill promotion
+      // Candidate skill pipeline: register, record outcome, auto-promote
+      if (candidateSkillMgr) {
+        const synthesisSteps = (decision.actionChain || []).filter((s) => s?.type === 'skill' && s.code)
+        for (const step of synthesisSteps) {
+          const sName = step.skillName || `synth_${cycleCount}`
+          const existing = candidateSkillMgr.getMeta(sName)
+          if (!existing) {
+            candidateSkillMgr.registerExperimental(sName, {
+              code: String(step.code),
+              intent: decision.nextGoalHint || chainSignature,
+              tags: ['daemon', 'chain_synthesized'],
+              riskLevel: 'medium',
+            })
+            await logger.log({
+              type: 'candidate_registered',
+              cycle: cycleCount,
+              skillName: sName,
+              tier: 'experimental',
+            })
+          }
+          const outcome = { ok: success, reason: success ? 'chain_completed' : 'chain_failed' }
+          const updated = candidateSkillMgr.recordOutcome(sName, outcome)
+          if (updated) {
+            await logger.log({
+              type: 'candidate_outcome_recorded',
+              cycle: cycleCount,
+              skillName: sName,
+              ok: outcome.ok,
+              successCount: updated.successCount,
+              failureCount: updated.failureCount,
+              quarantined: updated.quarantined,
+              promotionEligible: updated.promotionEligible,
+            })
+            // Auto-promote if eligible
+            if (updated.promotionEligible && updated.tier === 'experimental') {
+              const promoResult = candidateSkillMgr.promote(sName)
+              await logger.log({
+                type: 'candidate_promoted',
+                cycle: cycleCount,
+                skillName: sName,
+                result: promoResult,
+              })
+            }
+          }
+        }
+      }
+
+      // Legacy skill promotion (for non-synthesis chain patterns)
       await promoteSkillIfStable({
         memory,
         decision,

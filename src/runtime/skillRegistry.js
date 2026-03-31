@@ -64,6 +64,7 @@ function createSkillRegistry({
   skillsDir = path.resolve(process.cwd(), 'skills'),
   enabled = false,
   minScore = 0.25,
+  candidateSkillMgr = null,
 } = {}) {
   const isEnabled = !!enabled
   const indexPath = path.join(skillsDir, 'index.json')
@@ -185,7 +186,35 @@ function createSkillRegistry({
       }
     }
 
-    // 2) Fallback to auto sidecar metadata files.
+    // 2) Candidate pipeline skills (experimental + promoted directories).
+    if (candidateSkillMgr) {
+      const pipelineSkills = candidateSkillMgr.listAll()
+      for (const pm of pipelineSkills) {
+        const intentTokens = tokenize(pm.intent)
+        const tagTokens = Array.isArray(pm.tags) ? pm.tags.flatMap(tokenize) : []
+        const score = Math.max(overlapScore(goalTokens, intentTokens), overlapScore(goalTokens, tagTokens))
+        const effectiveMinScore = minScore
+
+        if (pm.quarantined) {
+          candidates.push({ skillName: pm.name, source: 'candidate', score, effectiveMinScore, reason: 'quarantined' })
+          continue
+        }
+        if (!candidateSkillMgr.isApproved(pm.name)) {
+          candidates.push({ skillName: pm.name, source: 'candidate', score, effectiveMinScore, reason: 'not_approved' })
+          continue
+        }
+        if (score < effectiveMinScore) {
+          candidates.push({ skillName: pm.name, source: 'candidate', score, effectiveMinScore, reason: 'below_threshold' })
+          continue
+        }
+        candidates.push({ skillName: pm.name, source: 'candidate', score, effectiveMinScore, reason: 'eligible' })
+        if (!best || score > best.score) {
+          best = { score, skillName: pm.name, meta: pm, source: 'candidate' }
+        }
+      }
+    }
+
+    // 3) Fallback to auto sidecar metadata files (legacy).
     const files = await fs.promises.readdir(skillsDir)
     const metaFiles = files.filter((f) => f.endsWith('.meta.json'))
     for (const f of metaFiles) {
@@ -197,6 +226,9 @@ function createSkillRegistry({
       } catch {
         continue
       }
+      // Skip if already handled by candidate pipeline
+      if (candidateSkillMgr && candidateSkillMgr.getMeta(meta.skillName)) continue
+
       const intentTokens = tokenize(meta.intent)
       const tagTokens = Array.isArray(meta.tags) ? meta.tags.flatMap(tokenize) : []
       const score = Math.max(overlapScore(goalTokens, intentTokens), overlapScore(goalTokens, tagTokens))
