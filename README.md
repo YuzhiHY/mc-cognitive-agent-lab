@@ -200,7 +200,7 @@ personality/
   state.json                     — personality state (mood, recent events, tendency hints)
 
 skills/                          — auto-promoted skill files
-tests/                           — 23 automated tests
+tests/                           — 28 automated tests
 logs/                            — JSONL runtime logs + failure fingerprints
 memory/                          — persistent knowledge/learned skills
 ```
@@ -213,7 +213,7 @@ memory/                          — persistent knowledge/learned skills
 npm test
 ```
 
-Runs 23 automated tests covering:
+Runs 28 automated tests covering:
 
 | Test | Coverage |
 |------|----------|
@@ -240,6 +240,11 @@ Runs 23 automated tests covering:
 | `daemon-decomposition` | Phase 9 extracted module unit tests |
 | `daemon-orchestration` | Phase 9.5 gate evaluators + orchestrators |
 | `feeler` | Feeler probe + compensate + disposable block logic |
+| `memory2` | Working + long-term memory system |
+| `prerequisite-resolver` | Goal prerequisite chain resolution |
+| `candidate-pipeline-integration` | Candidate skill lifecycle wired into daemon |
+| `cycle-logger-observability` | Cycle summary with fingerprints + candidate events |
+| `scenario-behavior` | 7 multi-cycle behavioral invariants (TDD) |
 
 ---
 
@@ -300,18 +305,35 @@ This project prioritizes **structure over raw capability**.
 
 ## Current stage
 
-Phases 0-9.5 of the ARCHITECTURE.md roadmap are complete, plus prompt overhaul:
+Phases 0-12 of the ARCHITECTURE.md roadmap are complete:
 
 - **Phase 0-4**: Core contracts, reflex hardening, task state machine, interrupt arbitration
 - **Phase 5**: Tiered perception (reflex/execution/decision/semantic)
 - **Phase 6**: Scheduling-first LLM behavior + synthesis policy gate
-- **Phase 7**: Candidate skill pipeline (experimental → promoted → quarantined)
+- **Phase 7**: Candidate skill pipeline wired into runtime (experimental → promoted → quarantined)
 - **Phase 8**: Failure fingerprints + stuck detection expansion + avoidance hints
 - **Phase 9**: daemon.js pure-function extraction (5 modules)
 - **Phase 9.5**: daemon.js orchestration extraction (9 modules, 1167→460 lines)
+- **Phase 10**: Observability — failure fingerprints, expected outcomes, candidate events in cycle summary
+- **Phase 11**: 7 scenario behavior tests (TDD) covering multi-cycle invariants
+- **Phase 12**: Architecture documentation (5 docs: architecture, perception, skills, planner-policy, reflex-and-interrupts)
 - **Prompt overhaul**: Kernel-method personality prompts, gameKnowledge-constrained decide prompt, anchorFacts injection, tendencyHints pipeline
 
-Remaining: Phase 10 (observability), Phase 11 (scenario tests), Phase 12 (documentation).
+Phase 13 (optional future work) is deferred until core loop stability is confirmed in production.
+
+---
+
+## Documentation
+
+Detailed architecture docs in `docs/`:
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/architecture.md) | Layered runtime walkthrough, module map, LLM role |
+| [Perception](docs/perception.md) | 4-tier perception model, field reference, isolation rules |
+| [Skills](docs/skills.md) | Skill contract, stable skills, candidate pipeline, synthesis policy |
+| [Planner Policy](docs/planner-policy.md) | 4-phase reasoning, scheduling-first, failure handling |
+| [Reflex & Interrupts](docs/reflex-and-interrupts.md) | 13 reflex rules, interrupt lifecycle, priority system |
 
 ---
 
