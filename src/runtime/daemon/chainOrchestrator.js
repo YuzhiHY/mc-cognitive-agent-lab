@@ -11,6 +11,7 @@ const { createChainRunControl } = require('../chainRunControl')
 const { compactChainSignature, chainSucceeded, promoteSkillIfStable } = require('./skillPromotion')
 const { evaluateExpectation } = require('./expectationEvaluator')
 const { inferExecutionMetaFromChain } = require('./executionMetadata')
+const { classifyFailure } = require('../contracts/failureFingerprint')
 
 function nowIso() {
   return new Date().toISOString()
@@ -268,9 +269,14 @@ function createChainOrchestrator({
               quarantined: updated.quarantined,
               promotionEligible: updated.promotionEligible,
             })
+            // Track quarantine for cycle observability
+            if (updated.quarantined) {
+              shared.cycleCandidateQuarantine = sName
+            }
             // Auto-promote if eligible
             if (updated.promotionEligible && updated.tier === 'experimental') {
               const promoResult = candidateSkillMgr.promote(sName)
+              shared.cycleCandidatePromotion = sName
               await logger.log({
                 type: 'candidate_promoted',
                 cycle: cycleCount,
@@ -350,6 +356,15 @@ function createChainOrchestrator({
         if (failedStatus === 'timeout' || /path|stuck|no path|movement/i.test(failedMsg)) {
           reflexLayer?.noteStuck?.()
         }
+        // Build failure fingerprint for observability (Phase 10)
+        try {
+          const failedStep = chainResult?.failedStep || {}
+          const fp = classifyFailure(
+            { ok: false, status: failedStep.status || 'failure', reason: failedMsg },
+            { skillName: decision?.chosenSkill, position: ctx?.snapshot?.status?.position },
+          )
+          shared.cycleFailureFingerprint = fp
+        } catch { /* fingerprint is optional — never break cycle */ }
       }
       shared.currentExecutionMeta = null
       shared.currentSkillMeta = null

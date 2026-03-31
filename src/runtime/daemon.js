@@ -127,6 +127,11 @@ function createDaemon({
     shared.metrics.cycles += 1
     const cycleStart = Date.now()
 
+    // Reset cycle-scoped observability fields
+    shared.cycleFailureFingerprint = null
+    shared.cycleCandidatePromotion = null
+    shared.cycleCandidateQuarantine = null
+
     // 0. Working memory maintenance
     memorySystem.workingMemory.decay(shared.cycleCount)
 
@@ -430,6 +435,10 @@ function createDaemon({
             threat: liveSnap?.threat_level || null,
             health: liveSnap?.status?.health ?? null,
             error: result.error || null,
+            failureFingerprint: shared.cycleFailureFingerprint || null,
+            expectedOutcome: shared.currentExecutionMeta?.expectedOutcome || null,
+            candidatePromotion: shared.cycleCandidatePromotion || null,
+            candidateQuarantine: shared.cycleCandidateQuarantine || null,
           })
         }
       } catch (err) {

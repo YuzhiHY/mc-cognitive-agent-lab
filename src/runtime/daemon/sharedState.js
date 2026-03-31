@@ -41,6 +41,11 @@ function createSharedState() {
       combatHoldCount: 0,
     },
 
+    // Cycle-scoped observability (reset each cycle, written by chainOrchestrator)
+    cycleFailureFingerprint: null,
+    cycleCandidatePromotion: null,
+    cycleCandidateQuarantine: null,
+
     // Player messages (chatListener pushes, runCycle splices)
     playerMessageQueue: [],
 

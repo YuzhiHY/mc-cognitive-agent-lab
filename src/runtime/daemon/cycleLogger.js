@@ -26,6 +26,10 @@ function buildCycleSummary({
   health,
   chainSignature,
   error,
+  failureFingerprint,
+  expectedOutcome,
+  candidatePromotion,
+  candidateQuarantine,
 }) {
   return Object.freeze({
     type: 'cycle_summary',
@@ -45,6 +49,10 @@ function buildCycleSummary({
     health: typeof health === 'number' ? health : null,
     chainSignature: chainSignature || null,
     error: error || null,
+    failureFingerprint: failureFingerprint || null,
+    expectedOutcome: expectedOutcome || null,
+    candidatePromotion: candidatePromotion || null,
+    candidateQuarantine: candidateQuarantine || null,
   })
 }
 
@@ -67,6 +75,10 @@ function debugPrint(summary) {
   if (summary.durationMs !== null) parts.push(`${summary.durationMs}ms`)
   if (summary.error) parts.push(`ERR=${summary.error}`)
   if (summary.chainSignature) parts.push(`chain=${summary.chainSignature}`)
+  if (summary.failureFingerprint) parts.push(`fp=${summary.failureFingerprint.failureClass}`)
+  if (summary.expectedOutcome) parts.push(`expect=${summary.expectedOutcome}`)
+  if (summary.candidatePromotion) parts.push(`PROMOTED=${summary.candidatePromotion}`)
+  if (summary.candidateQuarantine) parts.push(`QUARANTINE=${summary.candidateQuarantine}`)
   // eslint-disable-next-line no-console
   console.log(`[AGENT] ${parts.join(' | ')}`)
 }
