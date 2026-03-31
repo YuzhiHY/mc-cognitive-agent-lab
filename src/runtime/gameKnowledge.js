@@ -62,11 +62,22 @@ const TOOL_TIER_SATISFIERS = Object.freeze({
   ]),
 })
 
-// Crafting prerequisites: what do you need to craft each tool?
+// Crafting prerequisites: what do you need to craft each item?
+// Covers tools, weapons, stations, and common survival items.
 const TOOL_CRAFT_CHAIN = Object.freeze({
   wooden_pickaxe: { needs: ['oak_planks', 'stick'], needsCraftingTable: true },
+  wooden_axe: { needs: ['oak_planks', 'stick'], needsCraftingTable: true },
+  wooden_sword: { needs: ['oak_planks', 'stick'], needsCraftingTable: true },
+  wooden_shovel: { needs: ['oak_planks', 'stick'], needsCraftingTable: true },
   stone_pickaxe: { needs: ['cobblestone', 'stick'], needsCraftingTable: true },
+  stone_axe: { needs: ['cobblestone', 'stick'], needsCraftingTable: true },
+  stone_sword: { needs: ['cobblestone', 'stick'], needsCraftingTable: true },
   iron_pickaxe: { needs: ['iron_ingot', 'stick'], needsCraftingTable: true },
+  iron_sword: { needs: ['iron_ingot', 'stick'], needsCraftingTable: true },
+  furnace: { needs: ['cobblestone'], needsCraftingTable: true },
+  chest: { needs: ['oak_planks'], needsCraftingTable: true },
+  torch: { needs: ['stick', 'coal'], needsCraftingTable: false },
+  bread: { needs: ['wheat'], needsCraftingTable: true },
   stick: { needs: ['oak_planks'], needsCraftingTable: false },
   oak_planks: { needs: ['oak_log'], needsCraftingTable: false },
   crafting_table: { needs: ['oak_planks'], needsCraftingTable: false },
@@ -93,6 +104,13 @@ function getRequiredToolTier(blockName) {
  */
 function resolvePrerequisites(goalAction, snapshot) {
   const blockName = String(goalAction?.target || goalAction?.block || '').toLowerCase().replace(/^nearest_/, '')
+  const craftGoal = String(goalAction?.craftItem || '').toLowerCase()
+
+  // Case 1: crafting goal — resolve intermediate materials
+  if (craftGoal && TOOL_CRAFT_CHAIN[craftGoal]) {
+    return resolveCraftPrerequisites(craftGoal, snapshot)
+  }
+
   if (!blockName) return []
 
   const requiredTier = getRequiredToolTier(blockName)
@@ -117,28 +135,52 @@ function resolvePrerequisites(goalAction, snapshot) {
   }
 
   // No suitable tool in inventory — need to craft
-  const steps = []
-  const craftTarget = requiredTier // e.g., 'wooden_pickaxe'
-  const chain = TOOL_CRAFT_CHAIN[craftTarget]
+  return resolveCraftPrerequisites(requiredTier, snapshot, {
+    suffix: [{ step: 'equip', item: requiredTier, reason: `装备 ${requiredTier} 后才能挖掘` }],
+  })
+}
+
+/**
+ * Resolve crafting prerequisites for a target item.
+ * Recursively walks TOOL_CRAFT_CHAIN to find missing intermediate materials.
+ */
+function resolveCraftPrerequisites(targetItem, snapshot, opts = {}) {
+  const chain = TOOL_CRAFT_CHAIN[targetItem]
   if (!chain) {
-    // Unknown craft chain, just report the need
-    return [{ step: 'craft', item: craftTarget, reason: `${blockName} 需要 ${craftTarget}，背包中没有` }]
+    return [{ step: 'craft', item: targetItem, reason: `需要 ${targetItem}，背包中没有` }]
   }
 
-  // Check if intermediate materials are available
+  const inventoryItems = Array.isArray(snapshot?.inventory?.summary)
+    ? snapshot.inventory.summary
+    : []
+  const invNames = inventoryItems.map((i) => String(i.name || '').toLowerCase())
   const invSet = new Set(invNames)
+  const steps = []
 
-  // Check stick
-  if (chain.needs.includes('stick') && !invSet.has('stick')) {
-    // Need to craft sticks from planks
-    if (!invSet.has('oak_planks') && !invSet.has('birch_planks') && !invSet.has('spruce_planks')) {
-      // Need planks from logs
-      const hasLog = invNames.some((n) => n.endsWith('_log'))
-      if (hasLog) {
-        steps.push({ step: 'craft', item: 'planks', reason: '需要木板来合成木棍' })
+  // Resolve each needed material
+  for (const mat of chain.needs) {
+    if (invSet.has(mat)) continue
+    // Flexible planks matching: any _planks satisfies 'oak_planks' need
+    if (mat === 'oak_planks' && invNames.some((n) => n.endsWith('_planks'))) continue
+    // Flexible coal matching: charcoal satisfies 'coal' need
+    if (mat === 'coal' && invSet.has('charcoal')) continue
+    // Flexible log matching: any _log satisfies 'oak_log' need
+    if (mat === 'oak_log' && invNames.some((n) => n.endsWith('_log'))) continue
+
+    // Recursively resolve this material
+    const subChain = TOOL_CRAFT_CHAIN[mat]
+    if (subChain) {
+      const subSteps = resolveCraftPrerequisites(mat, snapshot)
+      for (const s of subSteps) {
+        // Avoid duplicate steps
+        if (!steps.some((e) => e.step === s.step && e.item === s.item)) {
+          steps.push(s)
+        }
       }
+    } else {
+      // Raw material not in inventory and no craft chain — report as needed
+      steps.push({ step: 'gather', item: mat, reason: `需要 ${mat} 来合成 ${targetItem}` })
     }
-    steps.push({ step: 'craft', item: 'stick', reason: '需要木棍来合成工具' })
   }
 
   // Check if crafting table is needed and available
@@ -147,17 +189,101 @@ function resolvePrerequisites(goalAction, snapshot) {
     const nearbyBlocks = Array.isArray(snapshot?.nearby?.blocks) ? snapshot.nearby.blocks : []
     const craftingTableNearby = nearbyBlocks.some((b) => b.name === 'crafting_table')
     if (!hasCraftingTable && !craftingTableNearby) {
-      steps.push({ step: 'craft', item: 'crafting_table', reason: '3x3合成需要工作台' })
+      const ctSteps = resolveCraftPrerequisites('crafting_table', snapshot)
+      for (const s of ctSteps) {
+        if (!steps.some((e) => e.step === s.step && e.item === s.item)) {
+          steps.push(s)
+        }
+      }
     }
     if (hasCraftingTable && !craftingTableNearby) {
-      steps.push({ step: 'place', item: 'crafting_table', reason: '需要放置工作台才能使用' })
+      if (!steps.some((e) => e.step === 'place' && e.item === 'crafting_table')) {
+        steps.push({ step: 'place', item: 'crafting_table', reason: '需要放置工作台才能使用' })
+      }
     }
   }
 
-  steps.push({ step: 'craft', item: craftTarget, reason: `${blockName} 需要 ${craftTarget}` })
-  steps.push({ step: 'equip', item: craftTarget, reason: `装备 ${craftTarget} 后才能挖掘` })
+  steps.push({ step: 'craft', item: targetItem, reason: `合成 ${targetItem}` })
+
+  // Append suffix steps (e.g. equip after craft for mining tools)
+  if (opts.suffix) steps.push(...opts.suffix)
 
   return steps
+}
+
+/**
+ * Compute items reachable through 1-2 intermediate crafting steps.
+ * Simulates what the inventory WOULD contain after intermediate crafts,
+ * then checks what becomes craftable. Excludes items already directly craftable.
+ *
+ * @param {Set<string>} currentInv - current inventory item names
+ * @param {string[]} directlyCraftable - items already in craftableItems
+ * @returns {string[]} items reachable via intermediate steps
+ */
+function computeReachableCraftables(currentInv, directlyCraftable) {
+  const directSet = new Set(directlyCraftable)
+  const simulated = new Set(currentInv)
+  const reachable = []
+
+  const hasAnyLog = (s) => [...s].some((n) => n.endsWith('_log'))
+  const hasAnyPlanks = (s) => [...s].some((n) => n.endsWith('_planks'))
+
+  // Pass 1: simulate direct crafting products into inventory
+  if (hasAnyLog(simulated)) {
+    simulated.add('oak_planks')
+    simulated.add('birch_planks')
+    simulated.add('spruce_planks')
+  }
+  if (hasAnyPlanks(simulated)) {
+    simulated.add('stick')
+    simulated.add('crafting_table')
+  }
+  if (simulated.has('cobblestone')) {
+    simulated.add('furnace')
+  }
+
+  // Pass 2: check what new items become craftable with simulated inventory
+  if (hasAnyPlanks(simulated) && simulated.has('stick')) {
+    for (const t of ['wooden_pickaxe', 'wooden_axe', 'wooden_sword', 'wooden_shovel']) {
+      if (!directSet.has(t)) reachable.push(t)
+    }
+  }
+  if (simulated.has('cobblestone') && simulated.has('stick')) {
+    for (const t of ['stone_pickaxe', 'stone_axe', 'stone_sword', 'furnace']) {
+      if (!directSet.has(t)) reachable.push(t)
+    }
+  }
+  if (simulated.has('iron_ingot') && simulated.has('stick')) {
+    for (const t of ['iron_pickaxe', 'iron_sword']) {
+      if (!directSet.has(t)) reachable.push(t)
+    }
+  }
+  if (simulated.has('stick') && (simulated.has('coal') || simulated.has('charcoal'))) {
+    if (!directSet.has('torch')) reachable.push('torch')
+  }
+  if (hasAnyPlanks(simulated)) {
+    for (const t of ['chest', 'crafting_table']) {
+      if (!directSet.has(t)) reachable.push(t)
+    }
+    if (simulated.has('stick') && !directSet.has('stick')) {
+      // stick itself becomes reachable if planks are reachable from logs
+    }
+  }
+  if (simulated.has('cobblestone') && simulated.has('furnace')) {
+    // With furnace, smelting becomes possible
+    if (simulated.has('raw_iron')) {
+      if (!directSet.has('iron_ingot')) reachable.push('iron_ingot')
+    }
+    if (hasAnyLog(simulated)) {
+      if (!directSet.has('charcoal')) reachable.push('charcoal')
+    }
+  }
+  // Bread needs 3 wheat + crafting table
+  if (simulated.has('wheat') && simulated.has('crafting_table')) {
+    if (!directSet.has('bread')) reachable.push('bread')
+  }
+
+  return [...new Set(reachable)]
 }
 
 // Blocks not useful as navigation targets
@@ -229,6 +355,8 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
   const hasCobble = invNames.has('cobblestone')
   const hasIronIngot = invNames.has('iron_ingot')
   const hasCoal = invNames.has('coal') || invNames.has('charcoal')
+  const hasWheat = invNames.has('wheat')
+  const hasRawIron = invNames.has('raw_iron')
 
   if (hasLogs) craftable.push('oak_planks', 'birch_planks', 'spruce_planks')
   if (hasPlanks) craftable.push('stick', 'crafting_table')
@@ -237,8 +365,12 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
   if (hasIronIngot && hasSticks) craftable.push('iron_pickaxe', 'iron_sword')
   if (hasSticks && hasCoal) craftable.push('torch')
   if (hasPlanks) craftable.push('chest')
+  if (hasWheat) craftable.push('bread')
   // Deduplicate
   const craftableItems = [...new Set(craftable)]
+
+  // --- Reachable craftables (1-2 intermediate steps away) ---
+  const reachableCraftables = computeReachableCraftables(invNames, craftableItems)
 
   // --- Available skills ---
   const skillList = stableSkills && typeof stableSkills.list === 'function'
@@ -261,12 +393,19 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
   if (hasLogs && !relevantChains.oak_planks) relevantChains.oak_planks = COMMON_CRAFTING_CHAINS.oak_planks
   if (hasPlanks && !relevantChains.stick) relevantChains.stick = COMMON_CRAFTING_CHAINS.stick
 
+  // Include crafting chains for reachable items too (so LLM sees the intermediate steps)
+  for (const item of reachableCraftables) {
+    if (COMMON_CRAFTING_CHAINS[item] && !relevantChains[item]) {
+      relevantChains[item] = COMMON_CRAFTING_CHAINS[item]
+    }
+  }
+
   return {
     actionSchema: {
       skill_ref: 'name (from availableSkills), args中的target/block用blockTargets中的值（裸方块名，不带nearest_前缀）',
       navigate: 'target (from navigableTargets, 带nearest_前缀)',
       dig: 'target (from diggableBlocks)',
-      craft: 'item (from craftableItems), count (number)',
+      craft: 'item (from craftableItems or reachableCraftables), count (number)',
       equip: 'item (from equippableItems)',
       attack: 'target (from attackableEntities, or "nearest")',
       chat: 'message (string)',
@@ -279,6 +418,7 @@ function buildGameKnowledge(snapshot, stableSkills, opts = {}) {
     blockTargets,
     diggableBlocks,
     craftableItems,
+    reachableCraftables,
     attackableEntities: attackable,
     equippableItems: equippableItems.slice(0, 15),
     craftingChains: relevantChains,
@@ -344,4 +484,4 @@ function buildAnchorFacts(snapshot, failureContext, opts = {}) {
   }
 }
 
-module.exports = { buildGameKnowledge, buildAnchorFacts, resolvePrerequisites, getRequiredToolTier, HOSTILE_TYPES, TOOL_REQUIREMENTS, TOOL_TIER_SATISFIERS }
+module.exports = { buildGameKnowledge, buildAnchorFacts, resolvePrerequisites, getRequiredToolTier, computeReachableCraftables, HOSTILE_TYPES, TOOL_REQUIREMENTS, TOOL_TIER_SATISFIERS }

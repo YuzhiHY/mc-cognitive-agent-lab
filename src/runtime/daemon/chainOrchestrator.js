@@ -217,6 +217,7 @@ function createChainOrchestrator({
       const expectationEval = evaluateExpectation({
         expectation: decision?.expectation,
         chainResult,
+        feelerCompensation: shared.lastFeelerCompensation,
       })
       if (expectationEval) {
         await logger.log({

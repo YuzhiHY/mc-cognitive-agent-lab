@@ -46,6 +46,9 @@ function createSharedState() {
     cycleCandidatePromotion: null,
     cycleCandidateQuarantine: null,
 
+    // Feeler compensation tracking (written by skill execution / navigateTo callers)
+    lastFeelerCompensation: null,
+
     // Player messages (chatListener pushes, runCycle splices)
     playerMessageQueue: [],
 

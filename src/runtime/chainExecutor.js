@@ -16,6 +16,39 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * Wrap a long-running promise with abort signal awareness.
+ * Polls signal every `pollMs` and invokes cleanup + resolves with aborted marker
+ * when signal fires, instead of waiting for the original promise to complete.
+ *
+ * @param {Promise} promise - the long-running operation
+ * @param {object|null} signal - chainRunControl signal ({ aborted, reason, at })
+ * @param {Function} [cleanup] - called on abort (e.g., stop digging)
+ * @param {number} [pollMs=150] - abort poll interval
+ * @returns {Promise} - original result or { _aborted: true, reason }
+ */
+function abortAwareWrap(promise, signal, cleanup, pollMs = 150) {
+  if (!signal) return promise
+  if (signal.aborted) {
+    if (typeof cleanup === 'function') try { cleanup() } catch { /* best effort */ }
+    return Promise.resolve({ _aborted: true, reason: signal.reason || 'abort_signal' })
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const poll = setInterval(() => {
+      if (signal.aborted && !settled) {
+        settled = true
+        clearInterval(poll)
+        if (typeof cleanup === 'function') try { cleanup() } catch { /* best effort */ }
+        resolve({ _aborted: true, reason: signal.reason || 'abort_signal' })
+      }
+    }, pollMs)
+    promise
+      .then((v) => { if (!settled) { settled = true; clearInterval(poll); resolve(v) } })
+      .catch((e) => { if (!settled) { settled = true; clearInterval(poll); reject(e) } })
+  })
+}
+
 function distanceTo(a, b) {
   const dx = a.x - b.x
   const dy = a.y - b.y
@@ -133,13 +166,18 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
           // LLM may reference learned/promoted skills that don't exist in stable repo
           return failOut(new Error(`Unknown skill: ${skillName} (not in stable repo)`), 'unknown_skill_ref')
         }
-        const res = await runSkillWithContract({
+        const skillPromise = runSkillWithContract({
           skill,
           api,
           bot,
           ctx,
           args: step.args || {},
+          signal,
         })
+        const res = await abortAwareWrap(skillPromise, signal)
+        if (res?._aborted) {
+          return { ...interruptedResult({ source: 'chain', actionType: 'skill_ref', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal_mid_skill', details: { skillName } }), result: { aborted: true } }
+        }
         return { ...res, result: res?.details?.output }
       }
       case 'chat': {
@@ -180,13 +218,17 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
           return failOut(new Error('Skill step missing code'), 'missing_skill_code', 'invalid')
         }
         const normalizedCode = code.replace(/\\n/g, '\n').replace(/\\t/g, '\t')
-        const result = await runSkillInSandbox({
+        const sandboxPromise = runSkillInSandbox({
           code: normalizedCode,
           ctx,
           api,
           timeoutMs: step.timeoutMs || adaptiveTimeoutMs(step, ctx, bot),
           filename: `${step.skillName || 'chain_skill'}.js`,
         })
+        const result = await abortAwareWrap(sandboxPromise, signal)
+        if (result?._aborted) {
+          return { ...interruptedResult({ source: 'chain', actionType: 'skill', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal_mid_skill', details: { skillName: step.skillName } }), result: { aborted: true } }
+        }
         // Sandbox now returns normalized execution result directly.
         const output = result?.details?.output
         if (output !== undefined) return { ...result, result: output }
@@ -261,7 +303,7 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
           try {
             await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true)
           } catch { /* */ }
-          await withTimeout(
+          const digPromise = withTimeout(
             bot.dig(block, 'raycast', 'raycast'),
             step.timeoutMs || adaptiveTimeoutMs(step, ctx, bot, block.position),
             async () => {
@@ -269,6 +311,13 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
               try { api.clearControlStates?.() } catch { /* best effort */ }
             },
           )
+          const digResult = await abortAwareWrap(digPromise, signal, () => {
+            try { bot.stopDigging?.() } catch { /* best effort */ }
+            try { api.clearControlStates?.() } catch { /* best effort */ }
+          })
+          if (digResult?._aborted) {
+            return { ...interruptedResult({ source: 'chain', actionType: 'dig', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal_mid_dig', details: { block: blockTarget } }), result: { aborted: true } }
+          }
           let collected = 0
           try {
             const loot = await api.collectNearbyDrops?.({
@@ -355,10 +404,14 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
           return failOut(new Error('Craft step missing item'), 'missing_craft_item', 'invalid')
         }
         try {
-          const result = step.smart !== false
-            ? await api.smartCraft(itemName, step.count || 1)
-            : await api.craft(itemName, step.count || 1, !!step.useCraftingTable)
-          return okOut({ type: 'craft', ...result }, 'craft_done')
+          const craftPromise = step.smart !== false
+            ? api.smartCraft(itemName, step.count || 1)
+            : api.craft(itemName, step.count || 1, !!step.useCraftingTable)
+          const craftResult = await abortAwareWrap(craftPromise, signal)
+          if (craftResult?._aborted) {
+            return { ...interruptedResult({ source: 'chain', actionType: 'craft', startedAt, endedAt: Date.now(), interruptReason: 'abort_signal_mid_craft', details: { item: itemName } }), result: { aborted: true } }
+          }
+          return okOut({ type: 'craft', ...craftResult }, 'craft_done')
         } catch (err) {
           return failOut(err, 'craft_failed')
         }
@@ -690,4 +743,4 @@ function createChainExecutor({ hardcodedSkillsFactory = null } = {}) {
   return Object.freeze({ run, executeStep })
 }
 
-module.exports = { createChainExecutor }
+module.exports = { createChainExecutor, abortAwareWrap }

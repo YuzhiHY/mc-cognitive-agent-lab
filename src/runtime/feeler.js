@@ -265,7 +265,7 @@ async function compensate(bot, probeResult, opts = {}) {
  */
 async function feel(bot, targetPos, opts) {
   const pr = probe(bot, targetPos)
-  if (!pr) return { probed: false, compensated: false }
+  if (!pr) return { probed: false, compensated: false, positionDelta: 0, yawDelta: 0 }
 
   // Only compensate if there's actually a problem
   const needsHelp = pr.forward.blocked
@@ -274,13 +274,26 @@ async function feel(bot, targetPos, opts) {
     || (pr.diagonal.flSolid && pr.diagonal.frSolid)
     || (pr.target.yawDelta != null && Math.abs(pr.target.yawDelta) > 0.52 && pr.target.distance < 5)
 
-  if (!needsHelp) return { probed: true, compensated: false }
+  if (!needsHelp) return { probed: true, compensated: false, positionDelta: 0, yawDelta: 0 }
+
+  // Capture pre-compensation state
+  const posBefore = bot.entity?.position?.clone()
+  const yawBefore = bot.entity?.yaw
 
   const result = await compensate(bot, pr, opts)
   if (result) {
-    return { probed: true, compensated: true, ...result }
+    // Measure post-compensation drift
+    const posAfter = bot.entity?.position
+    const yawAfter = bot.entity?.yaw
+    const positionDelta = (posAfter && posBefore)
+      ? posAfter.distanceTo(posBefore)
+      : 0
+    const yawDeltaAbs = (yawAfter != null && yawBefore != null)
+      ? Math.abs(normalizeAngle(yawAfter - yawBefore))
+      : 0
+    return { probed: true, compensated: true, ...result, positionDelta, yawDelta: yawDeltaAbs }
   }
-  return { probed: true, compensated: false }
+  return { probed: true, compensated: false, positionDelta: 0, yawDelta: 0 }
 }
 
 module.exports = { probe, compensate, feel, isSolid, isDisposable }

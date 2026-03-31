@@ -5,7 +5,7 @@ const {
   buildCentralLearnEvalPayload,
   buildCentralMemoryReviewPayload,
 } = require('./llm/prompt')
-const { buildGameKnowledge, buildAnchorFacts, resolvePrerequisites } = require('./gameKnowledge')
+const { buildGameKnowledge, buildAnchorFacts, resolvePrerequisites, HOSTILE_TYPES } = require('./gameKnowledge')
 // sense is no longer imported here — snapshot refresh is injected via refreshSnapshot callback
 const {
   getQueue,
@@ -92,6 +92,13 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
   // Rolling window of recent chain outcomes for failure pattern detection
   const recentOutcomes = []
   const MAX_RECENT_OUTCOMES = 6
+
+  // Snapshot similarity cache for fast-path decision reuse
+  let lastThinkSnapshot = null
+  let lastAnalysis = null
+  let lastDecision = null
+  let consecutiveReuses = 0
+  const MAX_CONSECUTIVE_REUSES = 3
   // Budget defaults scale with LLM_TIMEOUT_MS so API calls don't timeout prematurely.
   // Previous 3500ms defaults caused 100% timeout with real LLM providers.
   const llmTimeoutMs = Number(process.env.LLM_TIMEOUT_MS || 15000)
@@ -113,6 +120,58 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     return Promise.race([promise, timeout]).finally(() => {
       if (t) clearTimeout(t)
     })
+  }
+
+  /**
+   * Compute a 0-1 delta score between two snapshots.
+   * Higher = more change = more reason to re-run full reasoning.
+   * Returns 1.0 if no previous snapshot exists.
+   */
+  function snapshotDelta(prev, curr) {
+    if (!prev || !curr) return 1.0
+    let delta = 0
+
+    // Health change
+    const prevHp = prev?.status?.health ?? 20
+    const currHp = curr?.status?.health ?? 20
+    if (Math.abs(prevHp - currHp) > 2) delta += 0.3
+
+    // Threat level change
+    const prevThreat = prev?.threat_level || 'none'
+    const currThreat = curr?.threat_level || 'none'
+    if (prevThreat !== currThreat) delta += 0.4
+
+    // Nearby hostile count change
+    const prevHostiles = (prev?.nearby?.entities || []).filter(
+      (e) => e.hostile || HOSTILE_TYPES.has(String(e.name || '').toLowerCase()),
+    ).length
+    const currHostiles = (curr?.nearby?.entities || []).filter(
+      (e) => e.hostile || HOSTILE_TYPES.has(String(e.name || '').toLowerCase()),
+    ).length
+    if (prevHostiles === 0 && currHostiles > 0) delta += 0.5
+    else if (currHostiles === 0 && prevHostiles > 0) delta += 0.3
+    else if (Math.abs(prevHostiles - currHostiles) > 1) delta += 0.2
+
+    // Inventory item count change
+    const prevInvCount = Array.isArray(prev?.inventory?.summary) ? prev.inventory.summary.length : 0
+    const currInvCount = Array.isArray(curr?.inventory?.summary) ? curr.inventory.summary.length : 0
+    if (Math.abs(prevInvCount - currInvCount) > 2) delta += 0.2
+
+    // Position change >10 blocks
+    const prevPos = prev?.status?.position
+    const currPos = curr?.status?.position
+    if (prevPos && currPos) {
+      const dx = (currPos.x || 0) - (prevPos.x || 0)
+      const dz = (currPos.z || 0) - (prevPos.z || 0)
+      if (Math.sqrt(dx * dx + dz * dz) > 10) delta += 0.15
+    }
+
+    // Food level change
+    const prevFood = prev?.status?.food ?? 20
+    const currFood = curr?.status?.food ?? 20
+    if (Math.abs(prevFood - currFood) > 4) delta += 0.15
+
+    return Math.min(1.0, delta)
   }
 
   function quickFallbackDecision(ctx, analysis = {}) {
@@ -724,6 +783,85 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       }
     }
 
+    // Fast-path: snapshot similarity check — skip full reasoning if environment unchanged
+    const hasPlayerMessages = Array.isArray(ctx.playerMessages) && ctx.playerMessages.length > 0
+    const lastFailed = recentOutcomes.length > 0 && recentOutcomes[recentOutcomes.length - 1]?.failed
+    const delta = snapshotDelta(lastThinkSnapshot, ctx.snapshot)
+
+    if (
+      !hasPlayerMessages
+      && !lastFailed
+      && lastDecision
+      && lastAnalysis
+      && consecutiveReuses < MAX_CONSECUTIVE_REUSES
+    ) {
+      if (delta < 0.15) {
+        // Very low change — reuse last decision entirely
+        consecutiveReuses += 1
+        lastThinkSnapshot = ctx.snapshot
+        if (logger) {
+          await logger.log({
+            type: 'central_fast_path', cycle,
+            mode: 'full_reuse', delta: delta.toFixed(3),
+            consecutiveReuses,
+          })
+        }
+        return { ...lastDecision, thought: `snapshot_similar_reuse (delta=${delta.toFixed(3)}, reuse #${consecutiveReuses})` }
+      }
+      if (delta < 0.4) {
+        // Moderate change — skip analyze, reuse last analysis, only re-run decide
+        consecutiveReuses = 0
+        lastThinkSnapshot = ctx.snapshot
+        if (logger) {
+          await logger.log({
+            type: 'central_fast_path', cycle,
+            mode: 'skip_analyze', delta: delta.toFixed(3),
+          })
+        }
+        // Jump directly to Phase 2 + 3 with cached analysis
+        const thinkStart = Date.now()
+        const severity = lastAnalysis.severity || 'normal'
+        const skipPersonality = severity === 'idle' && cycle % 3 !== 0
+        let personalityFeedback = { voice: '', emotionalTags: [], suggestion: null }
+        if (!skipPersonality) {
+          try {
+            let enrichedBrief = lastAnalysis.personalityBrief || ''
+            const ms = ctx?.memorySystem
+            let recentActions
+            if (ms) {
+              const actionSummary = ms.projection.formatRecentActionsForBrief()
+              if (actionSummary) enrichedBrief += '\n' + actionSummary
+              recentActions = ms.projection.forPersonality({ snapshot: ctx.snapshot }).recentActions
+            }
+            personalityFeedback = await withBudget(
+              phasePersonality({ personality, brief: enrichedBrief, logger, cycle, recentActions }),
+              personalityBudgetMs,
+              'personality',
+            )
+          } catch { personalityFeedback = { voice: '', emotionalTags: [], suggestion: null } }
+        }
+        if (typeof refreshSnapshot === 'function') {
+          const freshSnapshot = refreshSnapshot()
+          ctx = { ...ctx, snapshot: freshSnapshot }
+        }
+        let decision
+        try {
+          decision = await withBudget(
+            phaseDecide({ analysis: lastAnalysis, personalityFeedback, ctx, memory }),
+            decideBudgetMs,
+            'decide',
+          )
+        } catch {
+          decision = quickFallbackDecision(ctx, lastAnalysis)
+        }
+        lastDecision = decision
+        return decision
+      }
+    }
+
+    // Full reasoning — reset reuse counter
+    consecutiveReuses = 0
+
     // Phase 1: Analyze & Translate
     const thinkStart = Date.now()
     let analysis
@@ -899,11 +1037,15 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
       })
     }
 
+    // Cache for fast-path reuse
+    lastThinkSnapshot = ctx.snapshot
+    lastAnalysis = analysis
+    lastDecision = decision
     lastChainResult = null
     return decision
   }
 
-  return Object.freeze({ think, setLastChainResult, evaluateLearnProgress })
+  return Object.freeze({ think, setLastChainResult, evaluateLearnProgress, snapshotDelta })
 }
 
 module.exports = { createCentralReasoning }

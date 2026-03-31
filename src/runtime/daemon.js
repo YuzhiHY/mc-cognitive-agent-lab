@@ -131,6 +131,7 @@ function createDaemon({
     shared.cycleFailureFingerprint = null
     shared.cycleCandidatePromotion = null
     shared.cycleCandidateQuarantine = null
+    shared.lastFeelerCompensation = null
 
     // 0. Working memory maintenance
     memorySystem.workingMemory.decay(shared.cycleCount)

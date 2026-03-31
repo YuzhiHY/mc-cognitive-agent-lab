@@ -20,6 +20,7 @@ async function runSkillWithContract({
   bot,
   ctx,
   args = {},
+  signal = null,
 }) {
   const startedAt = Date.now()
   const contract = validateSkillContract(skill)
@@ -54,6 +55,7 @@ async function runSkillWithContract({
     ctx,
     args,
     startedAt,
+    signal,
   })
 }
 
