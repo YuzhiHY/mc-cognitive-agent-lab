@@ -4,3 +4,6 @@ logs/
 personality/state.json
 *.log
 .env
+CLAUDE.md
+ARCHITECTURE.md
+mc-agent-architecture.md
