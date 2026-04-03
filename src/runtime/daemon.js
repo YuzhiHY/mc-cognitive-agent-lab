@@ -435,6 +435,7 @@ function createDaemon({
             durationMs: result.elapsedMs || null,
             threat: liveSnap?.threat_level || null,
             health: liveSnap?.status?.health ?? null,
+            chainSignature: shared.currentChainSignature || null,
             error: result.error || null,
             failureFingerprint: shared.cycleFailureFingerprint || null,
             expectedOutcome: shared.currentExecutionMeta?.expectedOutcome || null,

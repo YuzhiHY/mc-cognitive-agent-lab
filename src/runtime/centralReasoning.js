@@ -788,12 +788,20 @@ function createCentralReasoning({ llm, personalityLlm, stableSkills }) {
     const lastFailed = recentOutcomes.length > 0 && recentOutcomes[recentOutcomes.length - 1]?.failed
     const delta = snapshotDelta(lastThinkSnapshot, ctx.snapshot)
 
+    // Never reuse a fallback idle decision — it wastes cycles and creates a dead loop.
+    // When the last decision was a LLM-failure fallback (await_llm_retry, await_better_snapshot),
+    // force full re-reasoning so the LLM gets another chance to respond.
+    const lastGoalWasFallbackIdle = /^(await_llm_retry|await_better_snapshot)$/.test(
+      lastDecision?.nextGoalHint || '',
+    )
+
     if (
       !hasPlayerMessages
       && !lastFailed
       && lastDecision
       && lastAnalysis
       && consecutiveReuses < MAX_CONSECUTIVE_REUSES
+      && !lastGoalWasFallbackIdle
     ) {
       if (delta < 0.15) {
         // Very low change — reuse last decision entirely

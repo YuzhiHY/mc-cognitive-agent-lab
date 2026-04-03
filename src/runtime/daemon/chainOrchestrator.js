@@ -68,6 +68,7 @@ function createChainOrchestrator({
     })
 
     const chainSignature = compactChainSignature(decision?.actionChain || [])
+    shared.currentChainSignature = chainSignature
     shared.currentExecutionMeta = inferExecutionMetaFromChain(decision?.actionChain || [], stableSkills)
     shared.currentSkillMeta = shared.currentExecutionMeta?.skillName
       ? stableSkills.get(shared.currentExecutionMeta.skillName) || null
@@ -97,6 +98,27 @@ function createChainOrchestrator({
           await memory.delete(update.key)
         }
       }
+    }
+
+    // Pre-chain validation: strip place steps for items not in inventory.
+    // This prevents the chain from breaking on a predictable missing_item error
+    // and lets subsequent steps (craft, gather) still execute.
+    if (Array.isArray(decision?.actionChain)) {
+      const inv = bot.inventory?.items() || []
+      const invNames = new Set(inv.map((i) => i.name))
+      decision.actionChain = decision.actionChain.filter((step) => {
+        if (step.type === 'place' && step.item && !invNames.has(step.item)) {
+          void Promise.resolve(logger.log({
+            type: 'chain_step_prefiltered',
+            cycle: cycleCount,
+            stepType: 'place',
+            item: step.item,
+            reason: 'missing_item_in_inventory',
+          })).catch(() => {})
+          return false
+        }
+        return true
+      })
     }
 
     // Execute action chain

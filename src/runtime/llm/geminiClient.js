@@ -41,7 +41,7 @@ function createGeminiLLMClient({
           ],
           generationConfig: {
             temperature: 0.2,
-            maxOutputTokens: 1200,
+            maxOutputTokens: 3000,
             responseMimeType: 'application/json',
           },
         }
@@ -73,7 +73,14 @@ function createGeminiLLMClient({
           const reason = json?.candidates?.[0]?.finishReason || 'no_content'
           throw new Error(`Gemini empty response: finishReason=${reason}`)
         }
-        const parsed = parseJsonLoose(content)
+        let parsed
+        try {
+          parsed = parseJsonLoose(content)
+        } catch (parseErr) {
+          throw new Error(
+            `${parseErr.message} (model=${model}, raw=${content.slice(0, 300)})`
+          )
+        }
         if (_skipValidation) return parsed
         return validateLLMResponse(parsed)
       } finally {

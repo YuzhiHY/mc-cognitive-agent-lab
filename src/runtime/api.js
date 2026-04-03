@@ -96,6 +96,12 @@ function createApi(bot) {
         if (navResult?.reason === 'aborted') return { dug: null, reason: 'aborted' }
         found = bot.findBlock({ matching: blockType.id, maxDistance }) || found
       }
+      // Feeler probe: adjust position/yaw toward the target block before attempting dig.
+      // This compensates for slight misalignment after pathfinder arrival.
+      try {
+        const targetPos = found.position ? { x: found.position.x, y: found.position.y, z: found.position.z } : null
+        if (targetPos) await feel(bot, targetPos, { allowDig: false })
+      } catch { /* feeler is best-effort, never block mining */ }
       const center = found.position.offset(0.5, 0.5, 0.5)
       const canSee = typeof bot.canSeeBlock === 'function'
         ? () => bot.canSeeBlock(found)
@@ -214,12 +220,21 @@ function createApi(bot) {
       let lastCheckPos = bot.entity?.position?.clone()
       const navTarget = pos // capture for feeler
 
+      let probeCounter = 0
       const stuckInterval = setInterval(async () => {
         if (bot.targetDigBlock) return
         const curPos = bot.entity?.position
         if (!curPos || !lastCheckPos) { lastCheckPos = curPos?.clone(); return }
         const moved = lastCheckPos.distanceTo(curPos)
         lastCheckPos = curPos.clone()
+        probeCounter++
+
+        // Proactive feeler: every ~3 ticks (~4.5s), run a light probe even when moving.
+        // This catches slight misalignment early before the bot gets fully stuck.
+        if (probeCounter % 3 === 0 && moved >= 0.3 && moved < 1.5) {
+          try { await feel(bot, navTarget, { allowDig: false }) } catch { /* */ }
+        }
+
         if (moved < 0.3) {
           stuckChecks++
           if (stuckChecks >= 1) {
